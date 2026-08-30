@@ -1,7 +1,7 @@
 """Screener DSL and scan compiler.
 
 Signal dict (IR) -> validated polars expressions -> lazy pushdown over any
-LazyFrame source. Optional text DSL parses to the same IR (deferred).
+LazyFrame source. Text DSL parses to the same IR (scanlang.dsl.parse).
 
 >>> import polars as pl
 >>> from scanlang import compile, apply
@@ -15,6 +15,7 @@ from scanlang.compiler import (
     compile,
     validate,
 )
+from scanlang.dsl import parse
 from scanlang.indicators import INDICATORS
 from scanlang.scoring import score_bars
 from scanlang.stats import HORIZONS, backtest_summary, forward_stats
@@ -28,6 +29,7 @@ __all__ = [
     "catalog_from_schema",
     "compile",
     "forward_stats",
+    "parse",
     "score_bars",
     "validate",
 ]

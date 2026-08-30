@@ -95,7 +95,7 @@ def test_custom_partition_and_rsi():
     ]}
     assert validate(d, catalog=catalog_from_schema(bars)) == []
     out = apply(bars.lazy(), d, catalog=catalog_from_schema(bars), partition="sym").collect()
-    assert len(out) == 118  # all rows except the 2 rsi-null first bars
+    assert len(out) == 120  # rsi fill_null(50) keeps every bar non-null
 
 
 def test_validate_total_for_literals():
@@ -126,11 +126,14 @@ def test_validate_structural_for_computed():
     # atr requires high/low/close columns in the catalog
     small = {"open": {"label": "open", "dtype": "float"}, "close": {"label": "close", "dtype": "float"}}
     assert validate({"filters": [{"property": {"fn": "atr", "args": [14]}, "op": ">", "value": 0}]},
-                    catalog=small) == ["filters[0]: indicator 'atr' requires column 'high'"]
+                    catalog=small) == [
+        "filters[0].property: indicator 'atr' requires column 'high'",
+        "filters[0].property: indicator 'atr' requires column 'low'",
+    ]
 
 
 def test_catalog_from_schema_skips_unmapped():
-    bars = _bars().with_columns(tags=pl.Series([["a"]] * 60, dtype=pl.List(pl.String)))
+    bars = _bars().with_columns(tags=pl.Series([["a"]] * 120, dtype=pl.List(pl.String)))
     cat = catalog_from_schema(bars)
     assert cat["close"]["dtype"] == "float"
     assert cat["symbol"]["dtype"] == "str"
@@ -141,9 +144,10 @@ def test_stats():
     sessions = [T0 + dt.timedelta(days=i) for i in range(30)]
     closes = [100.0 + i for i in range(30)]
     st = forward_stats(sessions, closes, sessions[0])
-    assert st == pytest.approx({"5d": 4.0, "10d": 9.0, "20d": 19.0}, rel=1e-6)
+    assert st == pytest.approx({"5d": 5.0, "10d": 10.0, "20d": 20.0}, rel=1e-6)
     assert forward_stats(sessions, closes, sessions[25]) is None
     runs = [{"ran_at": "2026-01-01T22:00", "symbols": ["AAA"]}]
     summary = backtest_summary(runs, lambda sym, ran_on: st)
     assert summary["included"] == 1 and summary["total"] == 1
-    assert summary["horizons"][0] == ("5d", 100.0, 4.0, 1)
+    label, hit, avg, n = summary["horizons"][0]
+    assert (label, n, hit) == ("5d", 1, 100.0) and avg == pytest.approx(5.0)

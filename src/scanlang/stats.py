@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from bisect import bisect_left
 
-__all__ = ["HORIZONS", "forward_stats", "backtest_summary"]
+__all__ = ["HORIZONS", "backtest_summary", "forward_stats"]
 
 HORIZONS = (("5d", 5), ("10d", 10), ("20d", 20))
 

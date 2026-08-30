@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import polars as pl
 
-__all__ = ["score_bars", "MIN_BARS", "FRESHNESS_DAYS"]
+__all__ = ["FRESHNESS_DAYS", "MIN_BARS", "score_bars"]
 
 # Skip symbols with too little history for ATR/EMA50 to be meaningful.
 MIN_BARS = 30

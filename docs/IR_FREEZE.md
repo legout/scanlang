@@ -95,4 +95,6 @@ No version field.
 ## Open (outside this freeze)
 
 - duckdb SQL translation of compiled exprs (sqlglot) vs filter-in-polars — research
-  task, handoff item 4.
+  task, handoff item 4. Conclusion in `docs/RESEARCH_DUCKDB.md`: keep polars-only;
+  revisit only if hotlake moves to duckdb-native reads or scan volume outgrows
+  single-chunk polars.

@@ -20,14 +20,14 @@ from scanlang.scoring import score_bars
 from scanlang.stats import HORIZONS, backtest_summary, forward_stats
 
 __all__ = [
-    "PROPERTY_CATALOG",
+    "HORIZONS",
     "INDICATORS",
+    "PROPERTY_CATALOG",
     "apply",
     "backtest_summary",
     "catalog_from_schema",
     "compile",
     "forward_stats",
-    "HORIZONS",
     "score_bars",
     "validate",
 ]

@@ -33,7 +33,7 @@ import polars as pl
 
 from scanlang.indicators import INDICATORS
 
-__all__ = ["PROPERTY_CATALOG", "compile", "validate", "apply", "catalog_from_schema"]
+__all__ = ["PROPERTY_CATALOG", "apply", "catalog_from_schema", "compile", "validate"]
 
 # Mirrors scoring.score_bars() output columns. dtype: str, int, float, bool, date.
 PROPERTY_CATALOG: dict[str, dict[str, str]] = {
@@ -321,7 +321,7 @@ def catalog_from_schema(frame) -> dict[str, dict[str, str]]:
     )
     return {
         name: {"label": name, "dtype": dtype}
-        for name, dt in frame.schema.items()
+        for name, dt in frame.collect_schema().items()
         for base, dtype in mapping
         if isinstance(dt, base)
     }

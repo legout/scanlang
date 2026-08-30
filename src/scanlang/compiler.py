@@ -26,6 +26,7 @@ operands — dtype mismatches there surface at collect time.
 
 from __future__ import annotations
 
+import datetime as dt
 import operator
 from functools import reduce
 
@@ -64,7 +65,7 @@ _OPS = {
     "!=": lambda col, v: col != v,
     "between": lambda col, v: col.is_between(v[0], v[1], closed="both"),
     "in": lambda col, v: col.is_in(v),
-    "contains": lambda col, v: col.str.contains(v),
+    "contains": lambda col, v: col.str.contains(v, literal=True),
 }
 _CROSS = ("cross_above", "cross_below")
 _ARITH = {
@@ -74,6 +75,16 @@ _ARITH = {
     "/": operator.truediv,
 }
 _LIST_OPS = ("in", "between", "contains")
+
+
+def _ok_date(v) -> bool:
+    if not isinstance(v, str):
+        return False
+    try:
+        dt.date.fromisoformat(v)
+    except ValueError:
+        return False
+    return True
 
 
 def _is(dtype: str, value) -> bool:
@@ -103,7 +114,10 @@ def _operand(spec, *, catalog: dict, partition: str) -> pl.Expr:
             ]
             return builder(*parsed, partition=partition)
         key = next(k for k in spec if k in _ARITH)
-        return reduce(_ARITH[key], (_operand(a, catalog=catalog, partition=partition) for a in spec[key]))
+        vals = [_operand(a, catalog=catalog, partition=partition) for a in spec[key]]
+        if len(vals) == 1:  # unary fold; freeze names only negate: {"-": [x]}
+            return -vals[0] if key == "-" else vals[0]
+        return reduce(_ARITH[key], vals)
     return pl.lit(spec)
 
 
@@ -143,6 +157,8 @@ def _operand_errors(spec, where: str, catalog: dict, errors: list[str]) -> None:
         vals = spec[ks[0]]
         if not isinstance(vals, list) or not vals:
             errors.append(f"{where}.{ks[0]} must be a nonempty list")
+        elif len(vals) == 1 and ks[0] != "-":
+            errors.append(f"{where}.{ks[0]} must have >= 2 operands")
         else:
             for i, a in enumerate(vals):
                 _operand_errors(a, f"{where}.{ks[0]}[{i}]", catalog, errors)
@@ -151,6 +167,10 @@ def _operand_errors(spec, where: str, catalog: dict, errors: list[str]) -> None:
 
 
 # --- node validation -------------------------------------------------------
+
+
+def _val_ok(dtype: str, value) -> bool:
+    return _ok_date(value) if dtype == "date" else _is(dtype, value)
 
 
 def _leaf_errors(f, where: str, catalog: dict, errors: list[str]) -> None:
@@ -180,19 +200,24 @@ def _leaf_errors(f, where: str, catalog: dict, errors: list[str]) -> None:
         elif op == "between":
             if not isinstance(value, (list, tuple)) or len(value) != 2:
                 errors.append(f"{where}: 'between' needs [lo, hi]")
-            elif not all(_is(dtype, v) for v in value):
+            elif not all(_val_ok(dtype, v) for v in value):
                 errors.append(f"{where}: 'between' bounds must be {dtype} values")
         elif not isinstance(value, list) or not value:
             errors.append(f"{where}: 'in' needs a nonempty list of values")
-        elif not all(_is(dtype, v) for v in value):
+        elif not all(_val_ok(dtype, v) for v in value):
             errors.append(f"{where}: 'in' values must be {dtype} values")
     elif isinstance(value, dict):
         _operand_errors(value, f"{where}.value", catalog, errors)
     elif value is None:
         errors.append(f"{where}: value must not be null")
-    elif spec is not None and not _is(spec["dtype"], value):
+    elif spec is not None and not _val_ok(spec["dtype"], value):
         dtype = spec["dtype"]
-        errors.append(f"{where}: value for {prop!r} ({dtype}) must be {dtype}, got {value!r}")
+        if dtype == "date":
+            errors.append(
+                f"{where}: value for {prop!r} (date) must be an ISO date string, got {value!r}"
+            )
+        else:
+            errors.append(f"{where}: value for {prop!r} ({dtype}) must be {dtype}, got {value!r}")
 
 
 def _node_errors(node, where: str, catalog: dict, errors: list[str]) -> None:
@@ -256,6 +281,21 @@ def _compile_leaf(f, *, catalog: dict, partition: str) -> pl.Expr:
     prop = f["property"]
     op = f["op"]
     lhs = _operand(prop, catalog=catalog, partition=partition) if isinstance(prop, dict) else pl.col(prop)
+    value = f["value"]
+    spec = catalog.get(prop) if isinstance(prop, str) else None
+    if (
+        op in _OPS
+        and spec is not None
+        and spec["dtype"] == "date"
+        and isinstance(value, (str, list, tuple))
+    ):
+        # date literals arrive as ISO strings; parse so polars compares
+        # date-to-date (parseability validated in _leaf_errors)
+        value = (
+            dt.date.fromisoformat(value)
+            if isinstance(value, str)
+            else [dt.date.fromisoformat(v) for v in value]
+        )
     if op in _CROSS:
         rhs = _operand(f["value"], catalog=catalog, partition=partition)
         prev_lhs, prev_rhs = lhs.shift(1).over(partition), rhs.shift(1).over(partition)
@@ -263,8 +303,8 @@ def _compile_leaf(f, *, catalog: dict, partition: str) -> pl.Expr:
     if op in _LIST_OPS:
         # in/between/contains values are validated literal-only: raw scalars,
         # never operand exprs, so the raw value is the compiled form.
-        return _OPS[op](lhs, f["value"])
-    return _OPS[op](lhs, _operand(f["value"], catalog=catalog, partition=partition))
+        return _OPS[op](lhs, value)
+    return _OPS[op](lhs, _operand(value, catalog=catalog, partition=partition))
 
 
 def _compile_node(node, *, catalog: dict, partition: str) -> pl.Expr:

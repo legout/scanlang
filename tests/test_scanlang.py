@@ -118,6 +118,46 @@ def test_list_value_ops_compile_and_apply():
     scored.filter(compile(d))
 
 
+def test_unary_minus_negates():
+    scored = score_bars(_bars()).collect()
+    # {'-': [10.0]} must be -10.0, not identity: 10.0 would match AAA's first bar
+    neg = apply(scored, {"filters": [{"property": "close", "op": "==", "value": {"-": [10.0]}}]})
+    assert neg.is_empty()
+    d = {"filters": [{"property": {"-": [{"col": "score"}]}, "op": "==", "value": 0}]}
+    assert validate(d) == []
+    # -score == 0 iff score == 0
+    manual = scored.filter(pl.col("score") == 0)
+    assert apply(scored, d).equals(manual)
+    # single-element +,*,/ rejected (freeze names negate only)
+    errs = validate({"filters": [{"property": "rsi", "op": ">=", "value": {"+": [1.0]}}]})
+    assert errs == ["filters[0].value.+ must have >= 2 operands"]
+
+
+def test_contains_is_literal_not_regex():
+    scored = score_bars(_bars()).collect()
+    d = {"filters": [{"property": "symbol", "op": "contains", "value": "A*"}]}
+    assert validate(d) == []
+    assert apply(scored, d).is_empty()  # no symbol contains a literal '*'
+    assert validate({"filters": [{"property": "phase", "op": "contains", "value": "N("}]}) == []
+
+
+def test_date_literal_filters_and_validates():
+    bars = _bars()
+    d = {"filters": [{"property": "session", "op": "==", "value": "2026-01-02"}]}
+    assert validate(d) == []
+    out = apply(bars, d)
+    assert out["session"].to_list() == [T0 + dt.timedelta(days=1)] * 2
+    # list ops coerce too
+    d2 = {"filters": [{"property": "session", "op": "between", "value": ["2026-01-02", "2026-01-03"]}]}
+    got = apply(bars, d2)["session"].to_list()
+    assert got == [T0 + dt.timedelta(days=i) for i in (1, 2)] * 2
+    # bad date surfaces as validation error, not ComputeError
+    errs = validate({"filters": [{"property": "session", "op": "==", "value": "2026-13-99"}]})
+    assert "ISO date string" in errs[0]
+    with pytest.raises(ValueError):
+        compile({"filters": [{"property": "session", "op": "==", "value": "2026-13-99"}]})
+
+
 def test_validate_total_for_literals():
     assert validate({"filters": [{"property": "nope", "op": ">=", "value": 1}]}) == [
         "filters[0]: unknown property: 'nope'"

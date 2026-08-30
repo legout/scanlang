@@ -1,0 +1,41 @@
+[project]
+name = "scanlang"
+version = "0.1.0"
+description = "Screener DSL and scan compiler: signal definitions -> polars/duckdb pushdown filters."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Volker Lorrmann", email = "volker.lorrmann@gmail.com" }]
+requires-python = ">=3.11"
+keywords = ["screener", "scanner", "stock-screening", "polars", "duckdb", "finance"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = ["polars>=1.44.0"]
+
+[project.urls]
+Homepage = "https://github.com/legout/scanlang"
+Repository = "https://github.com/legout/scanlang"
+Issues = "https://github.com/legout/scanlang/issues"
+
+[project.optional-dependencies]
+talib = ["ta-lib>=0.7.1"]
+
+[dependency-groups]
+dev = ["pytest>=8.0.0", "ruff>=0.8.0"]
+
+[build-system]
+requires = ["uv_build>=0.11.8,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "scanlang"
+module-root = "src"

@@ -260,6 +260,10 @@ def _compile_leaf(f, *, catalog: dict, partition: str) -> pl.Expr:
         rhs = _operand(f["value"], catalog=catalog, partition=partition)
         prev_lhs, prev_rhs = lhs.shift(1).over(partition), rhs.shift(1).over(partition)
         return (lhs > rhs) & (prev_lhs <= prev_rhs) if op == "cross_above" else (lhs < rhs) & (prev_lhs >= prev_rhs)
+    if op in _LIST_OPS:
+        # in/between/contains values are validated literal-only: raw scalars,
+        # never operand exprs, so the raw value is the compiled form.
+        return _OPS[op](lhs, f["value"])
     return _OPS[op](lhs, _operand(f["value"], catalog=catalog, partition=partition))
 
 

@@ -98,6 +98,26 @@ def test_custom_partition_and_rsi():
     assert len(out) == 120  # rsi fill_null(50) keeps every bar non-null
 
 
+def test_list_value_ops_compile_and_apply():
+    scored = score_bars(_bars()).collect()
+    symbols = sorted(set(scored["symbol"]))
+    d = {"filters": [
+        {"property": "score", "op": "between", "value": [0, 1000]},
+        {"property": "symbol", "op": "in", "value": symbols},
+        {"property": "phase", "op": "contains", "value": "N"},
+    ]}
+    assert validate(d) == []
+    manual = scored.filter(
+        pl.col("score").is_between(0, 1000, closed="both")
+        & pl.col("symbol").is_in(symbols)
+        & pl.col("phase").str.contains("N")
+    )
+    assert apply(scored, d).equals(manual)
+    # compile() alone must not raise either (regression: between wrapped its
+    # list value in pl.lit and then subscripted the Expr -> TypeError)
+    scored.filter(compile(d))
+
+
 def test_validate_total_for_literals():
     assert validate({"filters": [{"property": "nope", "op": ">=", "value": 1}]}) == [
         "filters[0]: unknown property: 'nope'"

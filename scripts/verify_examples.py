@@ -5,8 +5,8 @@ import datetime as dt
 import polars as pl
 
 from scanlang import (
-    PROPERTY_CATALOG,
     INDICATORS,
+    PROPERTY_CATALOG,
     apply,
     backtest_summary,
     catalog_from_schema,

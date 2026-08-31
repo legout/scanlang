@@ -46,16 +46,18 @@ review lane explicitly with `kanban_request_review(reviewers=reviewer)`. No dedi
 review cards.
 
 ```
-D1 docs audit + source-of-truth fixes
-├── D2 runnable examples and example verification
-├── D3 README rewrite and link cleanup
-├── D4 Diataxis content pass
-├── D5 API reference and docstring accuracy
-└── D6 docs CI / hosting (after D2-D5)
+D1  docs audit + source-of-truth fixes
+└── D2  runnable examples and notebooks
+    └── D3  README cleanup
+        └── D4  Diataxis content pass
+            └── D5  API reference and docstring accuracy
+                └── D6  docs CI / GitHub Pages
 ```
 
-D2-D5 can run in parallel after D1. D6 waits for all four because its checks must
-cover the final examples, Markdown tree, API pages, and selected README links.
+D2-D5 are logically independent, but this repository has a single shared docs tree,
+README, Zensical config, and lockfile. Run them serially in one persistent `dir:`
+workspace to avoid concurrent commits and merge conflicts. D6 waits for D5 because
+its checks cover the final result.
 
 ### D1: audit and source-of-truth fixes
 
@@ -76,7 +78,7 @@ cover the final examples, Markdown tree, API pages, and selected README links.
 **Acceptance:** all internal README links resolve to tracked files; `zensical build`
 passes with no missing-page warnings; the chosen URL is recorded in the config.
 
-### D2: runnable examples and sync usage
+### D2: runnable examples and notebooks
 
 **Files:** `docs/examples/*.py`, `docs/notebooks/01_first_scan.ipynb`,
 `docs/notebooks/02_first_scan_marimo.py`, `docs/tutorials/first-scan.md`,

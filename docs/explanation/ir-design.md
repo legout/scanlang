@@ -106,9 +106,10 @@ Full signatures and behavior live in the [API reference](../reference/api.md).
 ## Evolution rule
 
 New capabilities = additive keys. Old consumers ignore unknown keys.
-No version field. IR freeze notes (historical) at
-[`docs/IR_FREEZE.md`](https://github.com/legout/scanlang/blob/master/docs/IR_FREEZE.md)
-list what is and isn't additive.
+No version field. The full contract lives at
+[IR freeze reference](../reference/ir-freeze.md); the historical
+freeze record is at
+[`docs/IR_FREEZE.md`](https://github.com/legout/scanlang/blob/master/docs/IR_FREEZE.md).
 
 ## Text DSL — frozen grammar
 

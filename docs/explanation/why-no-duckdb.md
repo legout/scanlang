@@ -13,7 +13,9 @@ support predicate pushdown, both can lazy-scan a directory of
 parquet files. Could we compile the same scan to both and pick a
 backend at runtime?
 
-Research task, closed 2026-08-30: see
+Research task, closed 2026-08-30: full notes at
+[Research: duckdb reference](../reference/research-duckdb.md); the
+historical repository record is at
 [`docs/RESEARCH_DUCKDB.md`](https://github.com/legout/scanlang/blob/master/docs/RESEARCH_DUCKDB.md).
 
 ## The short version

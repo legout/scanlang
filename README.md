@@ -14,8 +14,9 @@ run on any eager `DataFrame` or lazy `LazyFrame`; window semantics
 (indicators, crosses) are computed per partition, so 10 symbols or 10,000
 behave the same.
 
-Status: **v0.2, pre-alpha**. The IR is frozen (see
-[`docs/IR_FREEZE.md`](docs/IR_FREEZE.md)) — changes are additive only.
+Status: **v0.2, pre-alpha**. The IR is frozen — changes are additive only.
+User-facing spec: [`docs/reference/ir-freeze.md`](docs/reference/ir-freeze.md)
+(repository record: [`docs/IR_FREEZE.md`](docs/IR_FREEZE.md)).
 
 ## Install
 
@@ -72,7 +73,8 @@ The IR is the single contract between callers and `scanlang`. Nested
 boolean groups and computed operands are total: malformed defs raise
 `ValueError` from `compile`/`apply` and return error strings from
 `validate` — never a `polars.ComputeError` at filter time. Full spec:
-[`docs/IR_FREEZE.md`](docs/IR_FREEZE.md).
+[`docs/reference/ir-freeze.md`](docs/reference/ir-freeze.md)
+(repository record: [`docs/IR_FREEZE.md`](docs/IR_FREEZE.md)).
 
 ## Reference
 
@@ -127,14 +129,16 @@ Runnable scripts in [`docs/examples/`](docs/examples/), each verified:
 .venv/bin/python docs/examples/01_quickstart.py
 ```
 
-Annotated walkthroughs with verified output: [`docs/EXAMPLES.md`](docs/EXAMPLES.md).
+Annotated walkthroughs with verified output:
+[`docs/reference/examples-walkthrough.md`](docs/reference/examples-walkthrough.md).
 
 ## Docs
 
 Rendered site: `uv run --group docs zensical build` (config:
-[`docs/zensical.toml`](docs/zensical.toml)). Sections follow Diataxis —
+[`zensical.toml`](zensical.toml)). Sections follow Diataxis —
 Tutorials / How-to / Explanation / Reference. Why compiled filters stay
-in polars (not SQL): [`docs/RESEARCH_DUCKDB.md`](docs/RESEARCH_DUCKDB.md).
+in polars (not SQL): [`docs/reference/research-duckdb.md`](docs/reference/research-duckdb.md)
+(repository record: [`docs/RESEARCH_DUCKDB.md`](docs/RESEARCH_DUCKDB.md)).
 
 ## Development
 

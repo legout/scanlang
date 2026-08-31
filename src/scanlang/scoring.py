@@ -46,7 +46,8 @@ def score_bars(
     volume``. Sorted ``(symbol, session)`` ascending — the caller
     guarantees the sort.
 
-    Output columns mirror :data:`scanlang.compiler.PROPERTY_CATALOG` plus
+    Output columns mirror
+    [`PROPERTY_CATALOG`](api.md#scanlang.compiler.PROPERTY_CATALOG) plus
     ``bars`` (bar count per symbol). Boolean columns are
     materialised, float columns rounded to two decimals, ``rsi`` to one.
 

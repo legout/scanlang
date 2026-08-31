@@ -55,6 +55,16 @@ PROPERTY_CATALOG: dict[str, dict[str, str]] = {
     "bars": {"label": "Bars", "dtype": "int"},
 }
 
+"""Default property catalog: what ``score_bars`` output can be scanned on.
+
+Maps property name -> ``{"label": <display name>, "dtype": <one of str,
+int, float, bool, date>}``. ``date`` values arrive as ISO date strings.
+This is the default ``catalog=`` for [`compile`](api.md#scanlang.compiler.compile),
+[`validate`](api.md#scanlang.compiler.validate), and [`apply`](api.md#scanlang.compiler.apply);
+extend with your own dict (or [`catalog_from_schema`](api.md#scanlang.compiler.catalog_from_schema))
+to scan on other columns.
+"""
+
 # op -> builder(lhs, rhs) -> pl.Expr
 _OPS = {
     ">=": lambda col, v: col >= v,
@@ -357,7 +367,8 @@ def compile(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, partition: str 
 
     Returns:
         A single ``pl.Expr`` predicate. Apply with
-        ``frame.filter(compile(scan_def))`` or via :func:`apply`.
+        ``frame.filter(compile(scan_def))`` or via
+        [`apply`](api.md#scanlang.compiler.apply).
 
     Raises:
         ValueError: if ``scan_def`` fails validation; the message is the
@@ -449,14 +460,14 @@ def catalog_from_schema(frame: pl.DataFrame | pl.LazyFrame) -> dict[str, dict[st
 
     Returns:
         A ``dict[str, {"label", "dtype"}]`` suitable for passing as the
-        ``catalog=`` argument to :func:`apply`, :func:`compile`,
-        :func:`validate`.
+        ``catalog=`` argument to [`apply`](api.md#scanlang.compiler.apply),
+        [`compile`](api.md#scanlang.compiler.compile),
+        [`validate`](api.md#scanlang.compiler.validate).
 
     Examples:
         >>> import polars as pl
         >>> catalog_from_schema(pl.DataFrame({"close": [1.0], "score": [60]}))
-        {'close': {'label': 'close', 'dtype': 'float'},
-         'score': {'label': 'score', 'dtype': 'int'}}
+        {'close': {'label': 'close', 'dtype': 'float'}, 'score': {'label': 'score', 'dtype': 'int'}}
     """
     mapping = (
         (pl.Boolean, "bool"),

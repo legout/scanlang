@@ -2,10 +2,6 @@
 
 Signal dict (IR) -> validated polars expressions -> lazy pushdown over any
 LazyFrame source. Text DSL parses to the same IR (scanlang.dsl.parse).
-
->>> import polars as pl
->>> from scanlang import compile, apply
->>> scan_def = {"filters": [{"property": "score", "op": ">=", "value": 50}]}
 """
 
 from scanlang.compiler import (

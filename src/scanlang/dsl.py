@@ -381,10 +381,10 @@ def parse(text: str, *, catalog: dict = PROPERTY_CATALOG) -> dict:
     """Parse DSL text into a scan-def dict: ``{"filters": [node]}``.
 
     Pure stdlib tokenizer + recursive-descent parser per the frozen
-    grammar (see :doc:`explanation/ir-design`). Handles AND/OR/NOT,
-    nested groups, comparison ops, arithmetic, indicator calls, history
-    lookbacks, the `in`/`between`/`contains` shortcuts, and the
-    `cross_above`/`cross_below` leaf ops.
+    grammar (see [IR design](../explanation/ir-design.md)). Handles
+    AND/OR/NOT, nested groups, comparison ops, arithmetic, indicator
+    calls, history lookbacks, the `in`/`between`/`contains` shortcuts,
+    and the `cross_above`/`cross_below` leaf ops.
 
     Number-first args on ``ema``/``sma``/``rmin``/``rmax`` insert the
     ``close`` column (``ema(20)`` -> ``ema(close, 20)``). A leading
@@ -407,13 +407,8 @@ def parse(text: str, *, catalog: dict = PROPERTY_CATALOG) -> dict:
 
     Examples:
         >>> parse("ema(20) > ema(50)")
-        {'filters': [{'property': {'fn': 'ema', 'args': [{'col': 'close'}, 20]},
-                      'op': '>',
-                      'value': {'fn': 'ema', 'args': [{'col': 'close'}, 50]}}]}
+        {'filters': [{'property': {'fn': 'ema', 'args': [{'col': 'close'}, 20]}, 'op': '>', 'value': {'fn': 'ema', 'args': [{'col': 'close'}, 50]}}]}
         >>> parse("phase in [BREAKOUT, TREND] and not spring")
-        {'filters': [{'all': [
-            {'property': 'phase', 'op': 'in', 'value': ['BREAKOUT', 'TREND']},
-            {'not': {'property': 'spring', 'op': '==', 'value': True}},
-        ]}]}
+        {'filters': [{'all': [{'property': 'phase', 'op': 'in', 'value': ['BREAKOUT', 'TREND']}, {'not': {'property': 'spring', 'op': '==', 'value': True}}]}]}
     """
     return _Parser(text, catalog).parse()

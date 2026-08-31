@@ -10,6 +10,14 @@ __all__ = ["HORIZONS", "backtest_summary", "forward_stats"]
 
 HORIZONS = (("5d", 5), ("10d", 10), ("20d", 20))
 
+"""Forward-return horizons: ``(label, trading-day offset)`` pairs.
+
+Returned by [`forward_stats`](api.md#scanlang.stats.forward_stats) and
+the row keys of [`backtest_summary`](api.md#scanlang.stats.backtest_summary)
+horizons. Order matters only for the freshness check — the last entry's
+offset decides when a run is evaluable.
+"""
+
 
 def forward_stats(
     sessions: list[dt.date], closes: list[float], ran_on: dt.date
@@ -19,7 +27,7 @@ def forward_stats(
     Anchors entry at the first session on/after ``ran_on`` (a scan picked
     symbols at that day's close; the next session is the first tradable)
     and returns the +N-day return for each horizon in
-    :data:`scanlang.stats.HORIZONS`.
+    [`HORIZONS`](api.md#scanlang.stats.HORIZONS).
 
     Args:
         sessions: Ascending list of trading sessions.
@@ -28,16 +36,17 @@ def forward_stats(
 
     Returns:
         ``{label: return%}`` for each horizon in
-        :data:`scanlang.stats.HORIZONS` (default ``{"5d", "10d",
-        "20d"}`), or ``None`` when the longest forward window hasn't
-        elapsed yet (a fresh run) or the run predates the lake window.
+        [`HORIZONS`](api.md#scanlang.stats.HORIZONS) (default ``{"5d",
+        "10d", "20d"}``), or ``None`` when the longest forward window
+        hasn't elapsed yet (a fresh run) or the run predates the lake
+        window.
 
     Examples:
         >>> import datetime as dt
         >>> sessions = [dt.date(2026, 1, 1) + dt.timedelta(days=i) for i in range(30)]
-        >>> closes = [100.0 + i for i in range(30)]
+        >>> closes = [128.0 + 16.0 * i for i in range(30)]
         >>> forward_stats(sessions, closes, dt.date(2026, 1, 1))
-        {'5d': 5.0, '10d': 10.0, '20d': 20.0}
+        {'5d': 62.5, '10d': 125.0, '20d': 250.0}
     """
     i = bisect_left(sessions, ran_on)
     if i + HORIZONS[-1][1] >= len(closes):
@@ -65,7 +74,7 @@ def backtest_summary(runs: list[dict], stats_fn: Callable) -> dict:
         hit_rate%, avg_return%, n), ...]}``. ``included`` is the count
         of picks whose forward window elapsed; ``total`` is the total
         picks across runs; ``horizons`` is keyed on
-        :data:`scanlang.stats.HORIZONS`.
+        [`HORIZONS`](api.md#scanlang.stats.HORIZONS).
 
     Examples:
         >>> import datetime as dt

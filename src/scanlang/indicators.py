@@ -72,3 +72,23 @@ INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
         (),
     ),
 }
+
+"""Indicator registry: the ``{"fn": name}`` operand extension point.
+
+Maps indicator name -> ``(arg_spec, builder, required_cols)``:
+
+- ``arg_spec``: one tag per positional arg — ``"expr"`` (any operand:
+  column ref, nested indicator, arithmetic) or ``"int"`` (a literal int
+  >= 1, i.e. a window length).
+- ``builder(*parsed, partition) -> pl.Expr``: called with the parsed
+  args in order plus the partition column name; must return a
+  polars-native expression, with every window op under ``.over(partition)``
+  so scans stay correct per symbol.
+- ``required_cols``: catalog columns the builder needs (validated by
+  [`validate`](api.md#scanlang.compiler.validate)); empty for most entries.
+
+Registry mutation is the extension point:
+``INDICATORS["stdev"] = (("expr", "int"), builder, ())`` — register
+idempotently (guard with ``if "stdev" not in INDICATORS``) at import
+time. See [Extend INDICATORS](../how-to/extend-indicators.md).
+"""

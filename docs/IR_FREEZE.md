@@ -93,10 +93,50 @@ No version field.
 - `forward_stats` + `backtest_summary` (+ `HORIZONS`) — forward-return evidence;
   pure, no frame deps.
 - `scan_def_from_signals`, `preview`, `spark_points` stay in marketdata-screens.
-- Text DSL: deferred. Parses to this same IR; build only if hand-written scans
-  actually happen.
+- Text DSL front-end: frozen (section below) — `scanlang.dsl.parse(text)` emits
+  this same IR.
 
 ## Open (outside this freeze)
 
 - duckdb SQL translation of compiled exprs (sqlglot) vs filter-in-polars — research
-  task, handoff item 4.
+  task, handoff item 4. **Closed 2026-08-30**: keep polars-only, no SQL backend
+  (see docs/RESEARCH_DUCKDB.md).
+
+## Text DSL front-end (frozen 2026-08-30, second session)
+
+`parse(text) -> scan_def` (returns `{"filters": [...]}` only; order_by/limit stay
+dict-side). Pure stdlib tokenizer + recursive-descent in `scanlang/dsl.py`. Grammar:
+
+```
+expr    := term (('AND'|'&&') term)*   -> {"all":[...]}
+        | term ('OR'|'||') term*       -> {"any":[...]}
+term    := 'NOT' term | '(' expr ')' | comparison | bool-col
+comparison := arith (op arith)?    op: > < >= <= == != =  (between/in below)
+arith   := mul (('+'|'-') mul)*    -> {"+"/"-" n-ary}
+mul     := atom (('*'|'/') atom)*
+atom    := number | 'string' | BAREWORD | call | atom '[' int ']'
+call    := name '(' args ')' ('[' int ']')?
+args    := atom (',' atom)*
+```
+
+Rules:
+
+- AND binds tighter than OR; both case-insensitive; `NOT` unary.
+- BAREWORD: catalog bool column -> `col == true` leaf; otherwise column ref.
+  Non-bool bare operand without comparison = parse error.
+- `name(...)` where name is in INDICATORS -> indicator call; else column with
+  lookback: `close(1)` -> `shift(close,1)`. Postfix `atom[n]` -> `shift(expr,n)`
+  (Pine-style, canonical). Both spellings accepted.
+- Default column: first-arg-number inserts `close` (ema/sma/rmin/rmax);
+  `rsi(14)`/`atr(14)` unchanged; explicit column stays `sma(volume,20)`.
+- `min(n)`/`max(n)` sugar -> `rmin`/`rmax` (default close).
+- `=` -> `==`. `between [lo, hi]` -> between op; `in [A, B, 'x']` -> in op
+  (barewords become strings).
+- `cross_above(a, b)` / `cross_below(a, b)` -> cross ops.
+- Indicator args/lookbacks validate through the existing IR validate(); no new
+  error contract — parse errors are SyntaxError with position, validation errors
+  stay in validate().
+- Not Pine: no vars/loops/security calls — expression subset only. Full Pine is
+  a compiler project, out of scope.
+- order_by stays catalog-props-only (old corpus's `order: close/min(21)` is a
+  future additive key, not v1).

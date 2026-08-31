@@ -166,10 +166,16 @@ class _Parser:
         if isinstance(lhs, dict) and lhs.get("__cross__"):
             a = lhs["args"]
             return {"property": a[0], "op": lhs["op"], "value": a[1]}
+        bad = self._cross_pos(lhs)
+        if bad:
+            raise SyntaxError(f"cross call not allowed here at position {bad}")
         kind, val, _ = self._peek()
         if kind == "cmp":
             self._next()
             rhs = self.arith()
+            bad = self._cross_pos(rhs)
+            if bad:
+                raise SyntaxError(f"cross call not allowed here at position {bad}")
             if isinstance(lhs, (_Name, dict)):
                 return {
                     "property": self._leaf_prop(lhs),
@@ -208,6 +214,24 @@ class _Parser:
                 f"column {lhs.name!r} needs a comparison at position {lhs.pos}"
             )
         raise SyntaxError(f"expected a comparison at position {self._peek()[2]}")
+
+    @staticmethod
+    def _cross_pos(x) -> int | None:
+        """Position of a __cross__ marker nested anywhere in an operand
+        fragment (call args, arithmetic folds), else None. Head position is
+        consumed by comparison(); anything nested would leak the marker
+        into validate() error text, so it is rejected at parse time."""
+        if isinstance(x, dict):
+            if x.get("__cross__"):
+                return x["pos"]
+            for v in x.values():
+                if (p := _Parser._cross_pos(v)) is not None:
+                    return p
+        if isinstance(x, list):
+            for v in x:
+                if (p := _Parser._cross_pos(v)) is not None:
+                    return p
+        return None
 
     def _leaf_prop(self, lhs) -> str | dict:
         if isinstance(lhs, _Name):
@@ -307,7 +331,7 @@ class _Parser:
         if name in _CROSS:
             if len(args) != 2:
                 raise SyntaxError(f"{name}() takes 2 args at position {pos}")
-            return {"__cross__": name, "op": name, "args": args}
+            return {"__cross__": name, "op": name, "args": args, "pos": pos}
         if name in INDICATORS:
             return {"fn": name, "args": self._default_close(name, args)}
         if name in self.catalog:
@@ -331,8 +355,11 @@ class _Parser:
             and isinstance(args[0], (int, float))
             and not isinstance(args[0], bool)
         ):
-            return [{"col": "close"}, *args] if len(args) == 1 else [args[1], args[0]]
-        return args
+            if len(args) == 1:
+                return [{"col": "close"}, *args]
+            if len(args) == 2:
+                return [args[1], args[0]]  # corpus (n, expr) -> canonical (expr, n)
+        return args  # len>2: pass through untouched so validate() reports arity
 
     # atom[n] -> shift(expr, n)
     def _postfix(self, node):

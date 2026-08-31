@@ -363,3 +363,24 @@ def test_validate_stays_out_of_parse():
     assert isinstance(d, dict)
     assert "takes 2 args" in validate(d)[0]
     assert validate(p("close>10")) == []
+
+
+def test_extra_call_args_reach_validate():
+    # regression: a 3-arg close-defaulted call must pass through untouched so
+    # validate() reports the arity — never silently reordered/dropped (parse
+    # must NOT raise; validate() is the single gate)
+    d = p("sma(200, close(22), 7)>5")
+    assert "'sma' takes 2 args, got 3" in validate(d)[0]
+
+
+def test_cross_call_rejected_outside_head():
+    # cross_* is only valid in head position; anywhere nested it is a parse
+    # error — never a __cross__ marker leaking into validate() error text
+    for text in (
+        "close>cross_above(ema(20),ema(50))",
+        "1+cross_above(ema(20),ema(50))>5",
+        "ema(cross_above(ema(20),ema(50)),20)>5",
+    ):
+        with pytest.raises(SyntaxError, match="position \\d+") as exc:
+            p(text)
+        assert "__cross__" not in str(exc.value)

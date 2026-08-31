@@ -93,25 +93,15 @@ Caller contract: the frame is sorted `(partition, time)` ascending.
 Nonstandard column names are renamed at the caller's edge
 (`lf.rename({"date": "session"})`).
 
-## Validation split — the design rationale
+Full signatures and behavior live in the [API reference](../reference/api.md).
 
-- **Total** for literal leaves: bad dtype, unknown property, unknown
-  operator — all surface as `ValueError` from `compile`/`apply` and as
-  error strings from `validate`. Never a `polars.ComputeError` at filter
-  time. Dtypes checked against the catalog (bool is not int).
-- **Structural** for computed operands: known fn, known col, arg
-  count/type, required cols. Dtype mismatches there (e.g.
-  `close > sma(symbol, 5)`) surface as polars errors at collect time —
-  the operand tree is structurally fine, but the join is wrong.
+## Validation split, null semantics
 
-Full reasoning: [Validation split](validation-split.md).
-
-## Null semantics
-
-Comparisons and `not` on null yield null; filter drops null rows.
-Documented behavior, not worked around.
-
-Full reasoning: [Null semantics](null-semantics.md).
+- **Total** for literal leaves (dtype-checked) vs **structural** for computed
+  operands (known fn, known col, arg count, required cols). Why the split
+  exists: [Validation split](validation-split.md).
+- Comparisons and `not` on null yield null; the filter drops the row.
+  Why we don't work around it: [Null semantics](null-semantics.md).
 
 ## Evolution rule
 

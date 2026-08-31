@@ -92,3 +92,7 @@ Same scan, four execution shapes, one `.collect()` per "edge".
 - [score_bars + stats](score-bars-stats.md) — when eager/lazy meets the
   stats helpers
 - [Examples index](../reference/examples.md)
+- Notebooks: [`01_first_scan.ipynb`](../notebooks/01_first_scan.ipynb)
+  (Jupyter) and [`02_first_scan_marimo.py`](../notebooks/02_first_scan_marimo.py)
+  (marimo) — the same scan as a runnable notebook
+- [Notebooks reference](../reference/notebooks.md)

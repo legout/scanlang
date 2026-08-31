@@ -37,6 +37,7 @@ nav = [
     { "Indicators" = "reference/indicators.md" },
     { "Examples" = "reference/examples.md" },
     { "Examples walkthrough" = "reference/examples-walkthrough.md" },
+    { "Notebooks" = "reference/notebooks.md" },
     { "IR freeze" = "reference/ir-freeze.md" },
     { "Research: duckdb" = "reference/research-duckdb.md" },
   ] },

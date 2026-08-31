@@ -20,6 +20,16 @@ Run any example with your project interpreter:
 | [`06_eager_quickstart.py`](https://github.com/legout/scanlang/blob/master/docs/examples/06_eager_quickstart.py) | same quickstart, eager DataFrame in |
 | [`07_lazy_vs_sync.py`](https://github.com/legout/scanlang/blob/master/docs/examples/07_lazy_vs_sync.py) | four modes — eager, lazy, piped, renamed |
 
+### Notebooks
+
+| Notebook | What you'll see |
+| --- | --- |
+| [`01_first_scan.ipynb`](https://github.com/legout/scanlang/blob/master/docs/notebooks/01_first_scan.ipynb) | the same first scan, Jupyter / nbformat — `uv run jupyter nbconvert --execute --to notebook --inplace docs/notebooks/01_first_scan.ipynb` |
+| [`02_first_scan_marimo.py`](https://github.com/legout/scanlang/blob/master/docs/notebooks/02_first_scan_marimo.py) | the same first scan, marimo reactive cells — `uv run marimo export html docs/notebooks/02_first_scan_marimo.py -o /tmp/scanlang-marimo.html --force` |
+
+See the [Notebooks reference](notebooks.md) for the full execution
+recipe and what each engine is good for.
+
 ### How-to: groups & operands
 
 | Script | What you'll see |

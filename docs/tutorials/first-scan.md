@@ -94,7 +94,7 @@ A scan definition is a plain dict. The only required key is `filters`;
 scan_def = {
     "filters": [
         {"property": "score", "op": ">=", "value": 40},
-        {"property": "phase", "op": "in", "value": ["BREAKOUT", "TREND"]},
+        {"property": "phase", "op": "!=", "value": "NONE"},
     ],
     "order_by": [{"property": "score", "dir": "desc"}],
     "limit": 5,

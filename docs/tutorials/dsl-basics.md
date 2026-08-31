@@ -115,19 +115,11 @@ scan_def = {
 
 Run it: `apply(scored, scan_def)` (or with a `LazyFrame` directly).
 
-## Validation: total on literal leaves, structural on computed operands
-
-- **Total** for literal leaves: bad dtype, unknown property, unknown
-  operator — all surface as `ValueError` from `compile`/`apply` and as
-  error strings from `validate`. Never a `polars.ComputeError` at filter
-  time.
-- **Structural** for computed operands: known fn, known col, arg
-  count/type, required cols. Dtype mismatches there (e.g.
-  `close > sma(symbol, 5)`) surface as polars errors at collect time —
-  the operand tree is structurally fine, but the join key is wrong.
-
-See [Validation split](../explanation/validation-split.md) for the
-rationale.
+`validate(scan_def)` returns `[]` when the dict is well-formed and a
+`list[str]` of errors keyed to field paths (`filters[0].value`, ...)
+when it isn't. `compile`/`apply` raise `ValueError` on the same
+conditions. See [Validation split](../explanation/validation-split.md)
+for the rationale.
 
 ## Where to next
 

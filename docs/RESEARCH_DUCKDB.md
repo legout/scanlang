@@ -1,8 +1,8 @@
 # RESEARCH — DuckDB SQL translation vs filter-in-polars
 
-> User-facing copy. The repository record (original research notes) lives at
-> [`docs/RESEARCH_DUCKDB.md`](https://github.com/legout/scanlang/blob/master/docs/RESEARCH_DUCKDB.md)
-> in the repository root.
+> **Repository record.** This is the original research notes. The current
+> user-facing copy lives at
+> [`reference/research-duckdb.md`](reference/research-duckdb.md) in the rendered site.
 
 Handoff item 4 (`docs/HANDOFF.md`). Analysis only. No production code changes.
 

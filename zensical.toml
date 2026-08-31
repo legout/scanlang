@@ -1,5 +1,5 @@
 [project]
-site_url = "https://scanlang.readthedocs.io/"
+site_url = "https://legout.github.io/scanlang/"
 site_name = "scanlang"
 site_description = "Screener DSL and scan compiler: signal definitions -> polars pushdown filters."
 site_author = "Volker Lorrmann"

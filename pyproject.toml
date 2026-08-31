@@ -1,13 +1,13 @@
 [project]
 name = "scanlang"
 version = "0.2.0"
-description = "Screener DSL and scan compiler: signal definitions -> polars/duckdb pushdown filters."
+description = "Screener DSL and scan compiler: signal definitions -> validated polars pushdown filters."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Volker Lorrmann", email = "volker.lorrmann@gmail.com" }]
 requires-python = ">=3.11"
-keywords = ["screener", "scanner", "stock-screening", "polars", "duckdb", "finance"]
+keywords = ["screener", "scanner", "stock-screening", "polars", "finance"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Operating System :: OS Independent",

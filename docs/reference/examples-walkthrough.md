@@ -1,20 +1,17 @@
 # Examples
 
-Seven worked examples (plus the text DSL, new in v0.2), all runnable and
-all verified: the scripts in `docs/examples/` print the output shown here
-and assert it, so docs and behavior can't drift. Each block marked
-`# cell:` pastes as one cell into jupyter/marimo; the scripts themselves
-are plain `python` files.
+Per-script reference for the seven runnable examples in `docs/examples/`.
+Each script prints the output shown here and asserts it in
+`if __name__ == "__main__"`, so docs and behaviour cannot drift. The
+fixture in every example is the same two-symbol OHLCV frame: `AAA` a
+60-day linear uptrend (10 -> 69), `BBB` a 60-day linear downtrend
+(60 -> 1), both with synthetic open/high/low/volume.
 
 Run them with your project interpreter:
 
 ```sh
 .venv/bin/python docs/examples/01_quickstart.py
 ```
-
-The fixture in every example is the same two-symbol OHLCV frame: `AAA` a
-60-day linear uptrend (10 -> 69), `BBB` a 60-day linear downtrend
-(60 -> 1), both with synthetic open/high/low/volume.
 
 ## 1. Quickstart: score, validate, apply
 
@@ -306,13 +303,6 @@ SyntaxError: unexpected None at position 8
 
 (The transcript is pinned by `tests/test_dsl.py` and the README examples are
 asserted in it too — run `.venv/bin/python -m pytest tests/test_dsl.py -q`.)
-
-## Where to go next
-
-- `docs/IR_FREEZE.md` — the full contract, including the validation split,
-  null semantics, and the additive-only evolution rule
-- `README.md` — API table and quickstart
-- `docs/RESEARCH_DUCKDB.md` — why compiled filters stay in polars
 
 ## Index of example scripts
 

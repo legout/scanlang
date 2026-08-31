@@ -122,29 +122,9 @@ print(picks.select("symbol", "score", "phase"))
 If you skipped the `.collect()` after `score_bars`, that's fine:
 `apply` is shape-preserving, so `picks` is still a `LazyFrame`. Add
 one `.collect()` at your edge (display, csv write, feed to
-`backtest_summary`) and nowhere else.
-
-## Decision point: where does `.collect()` live?
-
-The "lazy contract" (see [Explanation](../explanation/lazy-contract.md))
-is that you collect once, at the boundary, not earlier. Three
-reasonable patterns:
-
-```python
-# pattern A — eager all the way (notebook, REPL, small data)
-picks = apply(score_bars(df).collect(), scan_def)         # DataFrame out
-
-# pattern B — stay lazy until the last step
-picks = apply(score_bars(df), scan_def).collect()         # one collect
-
-# pattern C — pipe into a bigger plan
-picks = apply(score_bars(df), scan_def)
-joined = picks.join(other_table, on="symbol").with_columns(...)  # lazy
-display(joined.collect())                                    # one collect
-```
-
-There is no wrong choice between A, B, and C — pick the one where
-your `.collect()` count matches your data's natural edges.
+`backtest_summary`) and nowhere else. See
+[Lazy contract](../explanation/lazy-contract.md) for the four
+eager/lazy patterns and when each one wins.
 
 ## Where to next
 

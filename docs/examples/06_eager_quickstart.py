@@ -1,11 +1,11 @@
-"""Quickstart: score OHLCV bars, then filter/order/limit them with a scan def.
+"""Quickstart in eager mode: plain DataFrame in, apply, print.
 
-Run:  .venv/bin/python docs/examples/01_quickstart.py
+Run:  .venv/bin/python docs/examples/06_eager_quickstart.py
 
-In a marimo notebook, each block below a `# cell` marker becomes one cell.
-
-Want the eager-mode version? See `06_eager_quickstart.py`.
-Want a side-by-side of lazy vs eager? See `07_lazy_vs_sync.py`.
+The same API works on eager DataFrames. score_bars returns a LazyFrame;
+call `.collect()` once at your edge, then pass the eager frame to `apply`.
+Useful in notebooks, REPLs, and small one-off scripts where laziness adds
+no value.
 """
 
 import datetime as dt
@@ -38,24 +38,28 @@ def bars() -> pl.DataFrame:
     return pl.DataFrame(rows("AAA", uptrend)).vstack(pl.DataFrame(rows("BBB", downtrend)))
 
 
-# cell: score every symbol's latest bar (lazy in, lazy out — collect at your edge)
-scored = score_bars(bars().lazy()).collect()
+# cell: eager frame in. score_bars accepts DataFrame, returns LazyFrame —
+# collect once at your edge, then stay in eager-land.
+df = bars()  # pl.DataFrame
+scored = score_bars(df).collect()  # eager DataFrame from here on
 print(scored.select("symbol", "session", "close", "score", "phase"))
 
-# cell: a scan definition is a plain dict — validate() returns [] when it's valid
+# cell: a scan definition is a plain dict — validate() returns [] when valid
 scan_def = {
     "filters": [{"property": "score", "op": ">=", "value": 40}],
     "order_by": [{"property": "score", "dir": "desc"}],
-    "limit": 1,
+    "limit": 5,
 }
 print("errors:", validate(scan_def))  # []
 
-# cell: apply = filter + order_by + limit, on eager or lazy frames alike
-result = apply(scored, scan_def)
+# cell: apply runs on the eager frame — no .collect() needed downstream
+result = apply(scored, scan_def)  # eager in -> eager out
 print(result.select("symbol", "score", "phase"))
 
 if __name__ == "__main__":
     assert validate(scan_def) == []
+    # only AAA clears score>=40 in this two-symbol frame
     assert result.height == 1
+    assert result["symbol"][0] == "AAA"
     assert result["score"][0] == scored["score"].max()
-    print("01_quickstart OK")
+    print("06_eager_quickstart OK")

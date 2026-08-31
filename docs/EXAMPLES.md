@@ -1,10 +1,10 @@
 # Examples
 
-Six worked examples (plus the text DSL, new in v0.2), all runnable and all
-verified: the scripts in `docs/examples/` print the output shown here and
-assert it, so docs and behavior can't drift. Each block marked `# cell:`
-pastes as one cell into jupyter/marimo; the scripts themselves are plain
-`python` files.
+Seven worked examples (plus the text DSL, new in v0.2), all runnable and
+all verified: the scripts in `docs/examples/` print the output shown here
+and assert it, so docs and behavior can't drift. Each block marked
+`# cell:` pastes as one cell into jupyter/marimo; the scripts themselves
+are plain `python` files.
 
 Run them with your project interpreter:
 
@@ -313,3 +313,15 @@ asserted in it too — run `.venv/bin/python -m pytest tests/test_dsl.py -q`.)
   null semantics, and the additive-only evolution rule
 - `README.md` — API table and quickstart
 - `docs/RESEARCH_DUCKDB.md` — why compiled filters stay in polars
+
+## Index of example scripts
+
+| Script | What it shows |
+| --- | --- |
+| `01_quickstart.py` | score_bars + validate + apply (lazy) |
+| `02_groups.py` | flat defs + all/any/not groups |
+| `03_computed_operands.py` | column refs, indicators, arithmetic, crosses |
+| `04_custom_partition_and_registry.py` | custom partition, custom catalog, extending INDICATORS |
+| `05_score_and_stats.py` | apply on a LazyFrame + forward_stats / backtest_summary |
+| `06_eager_quickstart.py` | same quickstart, eager DataFrame in (collect at your edge) |
+| `07_lazy_vs_sync.py` | four modes — eager, lazy, piped, renamed column |

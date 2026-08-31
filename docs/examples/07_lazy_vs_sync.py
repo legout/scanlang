@@ -18,7 +18,7 @@ import datetime as dt
 
 import polars as pl
 
-from scanlang import apply, catalog_from_schema, score_bars, validate
+from scanlang import apply, score_bars, validate
 
 # cell: shared fixture — same bars() the other examples use
 T0 = dt.date(2026, 1, 1)

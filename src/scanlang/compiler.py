@@ -269,8 +269,31 @@ def _collect(scan_def, *, catalog: dict) -> list[str]:
     return errors
 
 
-def validate(scan_def, *, catalog: dict = PROPERTY_CATALOG) -> list[str]:
-    """Return error strings (empty = valid); human-facing, keyed to fields."""
+def validate(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG) -> list[str]:
+    """Validate a scan definition against the catalog without compiling it.
+
+    Returns a list of error strings (empty = valid). Each error is keyed to
+    the offending field path (``"filters[0].value"``, ``"order_by[1].dir"``,
+    ``"limit"``) so a UI can highlight inline. Total on literal leaves
+    (dtype-checked, never a polars error at filter time); structural on
+    computed operands (a wrong-dtype join surfaces at collect time).
+
+    Args:
+        scan_def: A scan-def dict (``{"filters": [...], "order_by": ...,
+            "limit": ...}``) or any object that has the same shape (UI
+            drafts, JSON from the Lab, parser output).
+        catalog: Property -> ``{"label", "dtype"}`` mapping. Default
+            ``PROPERTY_CATALOG`` (mirrors ``score_bars`` output).
+
+    Returns:
+        A list of error strings. Empty list == valid.
+
+    Examples:
+        >>> validate({"filters": [{"property": "score", "op": ">=", "value": 40}]})
+        []
+        >>> validate({"filters": [{"property": "score", "op": "~=", "value": 40}]})
+        ["filters[0]: unknown operator: '~='"]
+    """
     return _collect(scan_def, catalog=catalog)
 
 
@@ -317,8 +340,35 @@ def _compile_node(node, *, catalog: dict, partition: str) -> pl.Expr:
     return _compile_leaf(node, catalog=catalog, partition=partition)
 
 
-def compile(scan_def, *, catalog: dict = PROPERTY_CATALOG, partition: str = "symbol") -> pl.Expr:
-    """AND all top-level filter nodes into one polars predicate expression."""
+def compile(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, partition: str = "symbol") -> pl.Expr:
+    """Compile a scan definition into a single polars predicate expression.
+
+    ANDs the top-level ``filters`` list into one ``pl.Expr``. Validates the
+    definition first — raises ``ValueError`` with the first error string
+    if validation fails. The returned expression is shape-preserving: it
+    can be folded into a ``filter``, ``with_columns``, or any other polars
+    expression.
+
+    Args:
+        scan_def: A scan-def dict. Must pass ``validate()``.
+        catalog: Property -> ``{"label", "dtype"}`` mapping.
+        partition: Column name for window ops (``rsi``, ``ema``, ``atr``,
+            ``cross_above``, ...). Every window op becomes ``.over(partition)``.
+
+    Returns:
+        A single ``pl.Expr`` predicate. Apply with
+        ``frame.filter(compile(scan_def))`` or via :func:`apply`.
+
+    Raises:
+        ValueError: if ``scan_def`` fails validation; the message is the
+            first error string from ``validate()``.
+
+    Examples:
+        >>> import polars as pl
+        >>> expr = compile({"filters": [{"property": "score", "op": ">=", "value": 40}]})
+        >>> pl.DataFrame({"score": [10, 50]}).filter(expr).height
+        1
+    """
     errors = _collect(scan_def, catalog=catalog)
     if errors:
         raise ValueError(errors[0])
@@ -328,8 +378,40 @@ def compile(scan_def, *, catalog: dict = PROPERTY_CATALOG, partition: str = "sym
     return expr
 
 
-def apply(frame, scan_def, *, catalog: dict = PROPERTY_CATALOG, partition: str = "symbol"):
-    """Filter + order_by + limit a frame (eager or lazy) by a scan definition."""
+def apply(frame: pl.DataFrame | pl.LazyFrame, scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, partition: str = "symbol") -> pl.DataFrame | pl.LazyFrame:
+    """Filter + ``order_by`` + ``limit`` a frame by a scan definition.
+
+    Shape-preserving: ``DataFrame`` in -> ``DataFrame`` out,
+    ``LazyFrame`` in -> ``LazyFrame`` out. The compiled predicate folds
+    into the frame's plan; collect at your edge.
+
+    Args:
+        frame: A polars ``DataFrame`` or ``LazyFrame``. Caller sorts
+            ``(partition, time)`` ascending — the contract is the caller's,
+            not scanlang's.
+        scan_def: A scan-def dict. Must pass ``validate()``.
+        catalog: Property -> ``{"label", "dtype"}`` mapping.
+        partition: Column name for window ops and the sort key.
+
+    Returns:
+        A frame of the same kind as the input, with the scan applied.
+
+    Raises:
+        ValueError: if ``scan_def`` fails validation.
+
+    Examples:
+        >>> import polars as pl
+        >>> df = pl.DataFrame({"symbol": ["A", "B"], "score": [60, 20]})
+        >>> apply(df, {"filters": [{"property": "score", "op": ">=", "value": 40}]})
+        shape: (1, 2)
+        ┌────────┬───────┐
+        │ symbol ┆ score │
+        │ ---    ┆ ---   │
+        │ str    ┆ i64   │
+        ╞════════╪═══════╡
+        │ A      ┆ 60    │
+        └────────┴───────┘
+    """
     out = frame.filter(compile(scan_def, catalog=catalog, partition=partition))
     order_by = scan_def.get("order_by") or []
     if order_by:
@@ -345,8 +427,37 @@ def apply(frame, scan_def, *, catalog: dict = PROPERTY_CATALOG, partition: str =
 # --- catalogs --------------------------------------------------------------
 
 
-def catalog_from_schema(frame) -> dict[str, dict[str, str]]:
-    """polars schema (DataFrame or LazyFrame) -> catalog; unmapped dtypes skipped."""
+def catalog_from_schema(frame: pl.DataFrame | pl.LazyFrame) -> dict[str, dict[str, str]]:
+    """Build a catalog dict from a polars frame's schema.
+
+    Walks the frame's schema (DataFrame or LazyFrame) and emits
+    ``{name: {"label": name, "dtype": <simplified>}}`` for every column
+    with a mappable dtype. Dtype mapping:
+
+    - ``Bool``, ``Int*``, ``UInt*`` -> ``"int"`` (bool becomes ``"bool"``)
+    - ``Float*`` -> ``"float"``
+    - ``String`` -> ``"str"``
+    - ``Date``, ``Datetime`` -> ``"date"``
+
+    Unmappable dtypes (lists, structs, categoricals, durations, time,
+    object, decimal, ...) are silently skipped. Add them by hand if you
+    need them validated.
+
+    Args:
+        frame: A polars ``DataFrame`` or ``LazyFrame``. Only the schema is
+            inspected — the frame does not need to contain any rows.
+
+    Returns:
+        A ``dict[str, {"label", "dtype"}]`` suitable for passing as the
+        ``catalog=`` argument to :func:`apply`, :func:`compile`,
+        :func:`validate`.
+
+    Examples:
+        >>> import polars as pl
+        >>> catalog_from_schema(pl.DataFrame({"close": [1.0], "score": [60]}))
+        {'close': {'label': 'close', 'dtype': 'float'},
+         'score': {'label': 'score', 'dtype': 'int'}}
+    """
     mapping = (
         (pl.Boolean, "bool"),
         (pl.Int64, "int"),

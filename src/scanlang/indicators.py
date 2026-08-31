@@ -40,6 +40,9 @@ def _atr(n: int, partition: str) -> pl.Expr:
 
 
 # name -> (arg_spec, builder, required_cols)
+#
+# Extend by inserting entries; the entry shape is the contract. See
+# docs/how-to/extend-indicators.md for the extension recipe.
 INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "sma": (
         ("expr", "int"),

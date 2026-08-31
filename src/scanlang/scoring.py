@@ -35,7 +35,52 @@ def score_bars(
     min_bars: int = MIN_BARS,
     freshness_days: int = FRESHNESS_DAYS,
 ) -> pl.LazyFrame:
-    """Score every symbol's latest bar in ``bars`` and classify its phase."""
+    """Score every symbol's latest bar in ``bars`` and classify its phase.
+
+    Detects ``BASE`` / ``BREAKOUT`` / ``TREND`` / ``CLIMAX`` / ``NONE``
+    phases per symbol using EMA alignment, ATR expansion, volume
+    confirmation, accumulation, spring patterns, and RSI. One lazy polars
+    pass over all symbols; collects at the caller's edge.
+
+    Input columns (fixed): ``symbol, session, open, high, low, close,
+    volume``. Sorted ``(symbol, session)`` ascending — the caller
+    guarantees the sort.
+
+    Output columns mirror :data:`scanlang.compiler.PROPERTY_CATALOG` plus
+    ``bars`` (bar count per symbol). Boolean columns are
+    materialised, float columns rounded to two decimals, ``rsi`` to one.
+
+    Composite weights: spring +15, accumulation +10, volume +5/+15,
+    EMA stack +10/+20, fresh EMA5/20 cross +15, EMA50 rising +10,
+    price>EMA5 +5, ATR expansion +10/+15, wide range +5, RSI>70 +5,
+    upper wick +10, near-52w-low +5. Phase thresholds: ``CLIMAX`` >=70
+    with a blow-off condition, ``TREND`` >=60 with stack+ATR,
+    ``BREAKOUT`` >=50 with volume or spring + EMA5>EMA20, ``BASE`` >=40.
+
+    Args:
+        bars: A polars ``LazyFrame`` (preferred) or ``DataFrame``.
+        min_bars: Drop symbols with fewer than this many bars.
+            Default 30 (enough for EMA(20) and ATR(14)).
+        freshness_days: Drop symbols whose latest bar is more than this
+            many days behind the global max session. Default 5.
+
+    Returns:
+        A polars ``LazyFrame``. Columns: ``symbol, session, close,
+        score, phase, vol_ratio, atr_ratio, rsi, acc_score, spring,
+        ema_stack, recent_cross, upper_wick_pct, near_52w_low, bars``.
+
+    Examples:
+        >>> import polars as pl, datetime as dt
+        >>> n = 60
+        >>> sessions = [dt.date(2026, 1, 1) + dt.timedelta(days=i) for i in range(n)]
+        >>> df = pl.DataFrame({
+        ...     "symbol": ["A"] * n, "session": sessions,
+        ...     "open":  [0.0] * n, "high": [2.0] * n, "low": [-1.0] * n,
+        ...     "close": [float(i) for i in range(n)], "volume": [1000.0] * n,
+        ... })
+        >>> score_bars(df).collect().height
+        1
+    """
     bars = bars.lazy()
     c = pl.col
 

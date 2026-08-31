@@ -96,9 +96,12 @@ future additive key, not in the current IR.
 
 ## A worked example
 
-EMA cross with volume confirmation, ordered by score, top 5:
+EMA cross on raw bars (no scoring) — the cross fires on bar 2 of the
+uptrend, ordered by close, top 5:
 
 ```python
+lf = bars().lazy()
+
 scan_def = {
     "filters": [
         {
@@ -106,14 +109,19 @@ scan_def = {
             "op": "cross_above",
             "value": {"fn": "ema", "args": [{"col": "close"}, 20]},
         },
-        {"property": "vol_ratio", "op": ">", "value": 1.5},
     ],
-    "order_by": [{"property": "score", "dir": "desc"}],
+    "order_by": [{"property": "close", "dir": "desc"}],
     "limit": 5,
 }
+
+print(validate(scan_def))   # []
+print(apply(lf, scan_def).collect())  # AAA on the second session
 ```
 
-Run it: `apply(scored, scan_def)` (or with a `LazyFrame` directly).
+The scan uses the raw OHLCV frame, not a `score_bars` output: a
+`cross_above` needs the previous bar, and `score_bars` collapses to
+one row per symbol. To run on a scored frame, filter on its columns
+(`score`, `phase`, `vol_ratio`, ...) instead.
 
 `validate(scan_def)` returns `[]` when the dict is well-formed and a
 `list[str]` of errors keyed to field paths (`filters[0].value`, ...)

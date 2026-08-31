@@ -1,0 +1,57 @@
+name: docs
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install docs group
+        run: uv sync --group docs
+      - name: Tests
+        run: uv run pytest tests/ -q
+      - name: Lint
+        run: uv run ruff check src tests
+      - name: Run advertised examples
+        run: |
+          for f in docs/examples/*.py; do
+            echo "::group::$f"
+            uv run python "$f" >/dev/null
+            echo "::endgroup::"
+          done
+      - name: Execute Jupyter notebook
+        run: uv run jupyter nbconvert --execute --to notebook --inplace docs/notebooks/01_first_scan.ipynb
+      - name: Export marimo notebook
+        run: uv run marimo export html docs/notebooks/02_first_scan_marimo.py -o /tmp/scanlang-marimo.html --force
+      - name: Build site
+        run: uv run zensical build
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: check
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,107 @@
+[project]
+site_url = "https://scanlang.readthedocs.io/"
+site_name = "scanlang"
+site_description = "Screener DSL and scan compiler: signal definitions -> polars pushdown filters."
+site_author = "Volker Lorrmann"
+copyright = "Copyright &copy; 2026 Volker Lorrmann"
+repo_url = "https://github.com/legout/scanlang"
+repo_name = "legout/scanlang"
+edit_uri = "edit/master/docs/"
+
+docs_dir = "docs"
+site_dir = "site"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Tutorials" = [
+    { "First scan in 5 min" = "tutorials/first-scan.md" },
+    { "DSL basics" = "tutorials/dsl-basics.md" },
+  ] },
+  { "How-to guides" = [
+    { "Custom catalog + partition" = "how-to/custom-catalog-partition.md" },
+    { "Extend INDICATORS" = "how-to/extend-indicators.md" },
+    { "Eager vs lazy frames" = "how-to/eager-frames.md" },
+    { "score_bars + stats" = "how-to/score-bars-stats.md" },
+    { "Scan from text" = "how-to/scan-from-text.md" },
+  ] },
+  { "Explanation" = [
+    { "IR design" = "explanation/ir-design.md" },
+    { "Lazy contract" = "explanation/lazy-contract.md" },
+    { "Null semantics" = "explanation/null-semantics.md" },
+    { "Validation split" = "explanation/validation-split.md" },
+    { "Why no duckdb" = "explanation/why-no-duckdb.md" },
+  ] },
+  { "Reference" = [
+    { "API" = "reference/api.md" },
+    { "Operators" = "reference/operators.md" },
+    { "Indicators" = "reference/indicators.md" },
+    { "Examples" = "reference/examples.md" },
+    { "Examples walkthrough" = "reference/examples-walkthrough.md" },
+    { "IR freeze" = "reference/ir-freeze.md" },
+    { "Research: duckdb" = "reference/research-duckdb.md" },
+  ] },
+]
+
+[project.theme]
+language = "en"
+features = [
+  "content.code.copy",
+  "content.code.annotate",
+  "content.tabs.link",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.sections",
+  "navigation.path",
+  "navigation.top",
+  "search.highlight",
+  "toc.follow",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system mode"
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+toc.permalink = true
+pymdownx.details = {}
+pymdownx.highlight.anchor_linenums = true
+pymdownx.inlinehilite = {}
+pymdownx.superfences.custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+pymdownx.tabbed.alternate_style = true
+pymdownx.tasklist.custom_checkbox = true
+
+[project.plugins.mkdocstrings]
+enabled = true
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+inventories = ["https://docs.python.org/3/objects.inv"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "google"
+inherited_members = true
+show_source = false
+show_root_heading = true
+show_root_full_path = false
+summary = true

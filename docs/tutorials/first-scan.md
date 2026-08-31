@@ -22,7 +22,9 @@ happy path on the same fixture:
 - [`02_first_scan_marimo.py`](../notebooks/02_first_scan_marimo.py) —
   marimo-friendly (reactive cells)
 
-Both are checked in and CI-verified.
+Both are checked in and were executed headlessly via nbconvert /
+marimo export during the implementation run (no CI step runs them
+today — see the reviewer note in the notebooks task).
 
 ## Step 1 — Build a tiny OHLCV frame
 

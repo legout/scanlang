@@ -8,8 +8,8 @@ two-symbol OHLCV fixture. Pick the one that matches your environment.
 | [`01_first_scan.ipynb`][jup] | Jupyter / IPython | You're in a classic notebook, JupyterLab, VS Code, Colab, or any `%`-magics environment. |
 | [`02_first_scan_marimo.py`][mar] | marimo | You want reactive cells, deterministic re-runs, or a script-as-app workflow. |
 
-[jup]: ../../notebooks/01_first_scan.ipynb
-[mar]: ../../notebooks/02_first_scan_marimo.py
+[jup]: ../notebooks/01_first_scan.ipynb
+[mar]: ../notebooks/02_first_scan_marimo.py
 
 Both notebooks:
 

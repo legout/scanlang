@@ -1,9 +1,10 @@
 # Examples
 
-Six worked examples, all runnable and all verified against v0.1: the scripts
-in `docs/examples/` print the output shown here and assert it, so docs and
-behavior can't drift. Each block marked `# cell:` pastes as one cell into
-jupyter/marimo; the scripts themselves are plain `python` files.
+Six worked examples (plus the text DSL, new in v0.2), all runnable and all
+verified: the scripts in `docs/examples/` print the output shown here and
+assert it, so docs and behavior can't drift. Each block marked `# cell:`
+pastes as one cell into jupyter/marimo; the scripts themselves are plain
+`python` files.
 
 Run them with your project interpreter:
 
@@ -264,6 +265,47 @@ count, non-int window, missing required columns — all caught before any
 frame is touched. Dtype mismatches *inside* computed operands (e.g.
 `sma("symbol", 5)`) are the one thing that surfaces at collect time, by
 design.
+
+## 7. Text DSL: parse a one-liner into the IR (new in v0.2)
+
+`parse` is the third way in — no dict required. Same IR, same validate/apply:
+
+```python
+>>> from scanlang import parse
+>>> golden_cross = parse("cross_above(ema(20), ema(50))")
+>>> golden_cross
+{'filters': [{'property': {'fn': 'ema', 'args': [{'col': 'close'}, 20]},
+              'op': 'cross_above',
+              'value': {'fn': 'ema', 'args': [{'col': 'close'}, 50]}}]}
+>>> validate(golden_cross)
+[]
+```
+
+Both history spellings normalize identically — `close(22)` and Pine-style
+`close[22]` both become `shift(close, 22)` — and a lone number on
+`ema/sma/rmin/rmax` implies close (`ema(20)` -> `ema(close, 20)`):
+
+```python
+>>> parse("close > sma(200, close(22))") == parse("close > sma(200, close[22])")
+True
+>>> parse("ema(20) > 0")["filters"][0]["property"]
+{'fn': 'ema', 'args': [{'col': 'close'}, 20]}
+```
+
+Parse errors are `SyntaxError` with a 1-based position; semantic errors stay
+in `validate()`:
+
+```python
+>>> parse("close >")
+Traceback (most recent call last):
+  ...
+SyntaxError: unexpected None at position 8
+>>> validate(parse("sma(close, 20, 7) > 5"))
+["filters[0].property: 'sma' takes 2 args, got 3"]
+```
+
+(The transcript is pinned by `tests/test_dsl.py` and the README examples are
+asserted in it too — run `.venv/bin/python -m pytest tests/test_dsl.py -q`.)
 
 ## Where to go next
 

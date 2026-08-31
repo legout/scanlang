@@ -9,7 +9,7 @@ run on any eager `DataFrame` or lazy `LazyFrame`; window semantics
 (indicators, crosses) are computed per partition, so 10 symbols or 10,000
 behave the same.
 
-Status: v0.1. The IR is frozen — see `docs/IR_FREEZE.md` for the exact
+Status: v0.2. The IR is frozen — see `docs/IR_FREEZE.md` for the exact
 contract (additive changes only). Consumers: marketdata-screens (Lab UI),
 REPL, jupyter/marimo.
 
@@ -116,6 +116,44 @@ dtype mismatches there surface at collect time.
 
 **Nulls:** comparisons and `not` on null yield null, and filter drops null
 rows. Documented behavior, not worked around.
+
+## Text DSL
+
+The same scan definition can be written as a one-line expression.
+`parse` (v0.2) turns text into the IR dict — tokenizer + recursive-descent
+parser, pure stdlib, errors are `SyntaxError` with a 1-based position:
+
+```python
+>>> from scanlang import parse
+>>> parse("ema(20) > ema(50)")
+{'filters': [{'property': {'fn': 'ema', 'args': [{'col': 'close'}, 20]},
+              'op': '>',
+              'value': {'fn': 'ema', 'args': [{'col': 'close'}, 50]}}]}
+```
+
+More shapes:
+
+```python
+parse("cross_above(ema(20), ema(50))")            # golden cross, one line
+parse("close > sma(200, close(22)) and rsi(14) > 70")
+#   AND binds tighter than OR; sma's second arg is corpus order:
+#   sma(200, close(22)) -> sma(shift(close, 22), 200)
+parse("phase in [BREAKOUT, TREND] or close between [50, 70]")
+parse("spring and not near_52w_low")              # bareword bool -> == true
+```
+
+Rules worth knowing: a lone number on `ema/sma/rmin/rmax` implies `close`
+(`ema(20)` = `ema(close, 20)`; `rsi(14)`/`atr(14)` are already correct);
+history has two spellings — `close(22)` and Pine-style postfix
+`close[22]` — both normalize to `shift(close, 22)`; `=` means `==`;
+`min(n)`/`max(n)` sugar to `rmin`/`rmax`. Parse errors (bad syntax, unknown
+column) raise `SyntaxError` with position; semantic errors — wrong arg
+counts, bad windows — stay in `validate()`:
+
+```python
+>>> validate(parse("sma(close, 20, 7) > 5"))
+["filters[0].property: 'sma' takes 2 args, got 3"]
+```
 
 ## Any LazyFrame, any catalog
 

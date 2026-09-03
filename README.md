@@ -21,9 +21,12 @@ design rationale, see [docs/explanation/ir-design.md](docs/explanation/ir-design
 uv add scanlang              # or: pip install scanlang
 ```
 
-Requires Python >= 3.11 and polars >= 1.44. The optional `talib` extra is a
-placeholder for a future value-parity indicator module; nothing in the public
-API depends on it yet.
+Requires Python >= 3.11 and polars >= 1.44. The optional `duckdb` extra
+(`uv add 'scanlang[duckdb]'` or `pip install 'scanlang[duckdb]'`) pulls
+duckdb >= 1.5 and enables the [`scanlang.duckdb_sql`](docs/reference/duckdb-backend.md)
+backend, which compiles the same IR to parameterized SQL against the
+community talib extension. The optional `talib` extra remains a
+placeholder for value-parity indicator helpers.
 
 ## Quickstart (eager)
 
@@ -90,6 +93,44 @@ operator reference: [`docs/reference/operators.md`](docs/reference/operators.md)
 bigger polars plan; call `.collect()` at the edge if you want a `DataFrame`.
 Full guide: [`docs/how-to/eager-frames.md`](docs/how-to/eager-frames.md).
 
+## Engines at a glance
+
+Two backends consume the same scan-def dict. Pick per data edge.
+
+| Engine | Backend module | When to use it |
+| --- | --- | --- |
+| polars (default) | `scanlang.apply` | Frame is `pl.DataFrame` / `pl.LazyFrame`; notebook, REPL, small script; lazy pipeline into more polars ops. |
+| duckdb (opt-in) | `scanlang.duckdb_sql.apply_sql` | Data already lives in duckdb; need `macd` / `bbands` / `adx` / `aroon` / `cdlengulfing` / `ht_trendline` (talib extension); full-universe scans where the benchmark shows SQL pushdown beats polars. |
+
+The duckdb backend:
+
+```python
+import duckdb
+from scanlang import validate
+from scanlang.duckdb_sql import apply_sql
+
+con = duckdb.connect()
+con.execute("CREATE VIEW bars AS SELECT * FROM 'daily_bars.parquet'")
+
+scan_def = {
+    "filters": [
+        {"property": {"fn": "macd", "args": [12]}, "op": ">", "value": 0},
+        {"property": "score", "op": ">=", "value": 40},
+    ],
+    "order_by": [{"property": "score", "dir": "desc"}],
+    "limit": 20,
+}
+validate(scan_def, engine="duckdb")     # [] when valid
+hits = apply_sql(con, scan_def, relation="bars")
+```
+
+`apply_sql` calls `INSTALL talib FROM community; LOAD talib` on the
+connection itself. The full module surface, lowering rules, and
+`SQL_INDICATORS` registry:
+[`docs/reference/duckdb-backend.md`](docs/reference/duckdb-backend.md).
+Install and connect walk-through:
+[`docs/how-to/duckdb-backend.md`](docs/how-to/duckdb-backend.md).
+
 ## Docs (Diataxis)
 
 Build the site locally with `uv run --group docs zensical build` (config:
@@ -98,11 +139,13 @@ split:
 
 - [Tutorials](docs/tutorials/first-scan.md) - learning-oriented; get to a first scan.
 - [How-to guides](docs/how-to/) - task-oriented; solve a specific problem (custom
-  catalog/partition, extending indicators, scan from text, score + stats).
+  catalog/partition, extending indicators, scan from text, score + stats,
+  duckdb backend).
 - [Explanation](docs/explanation/) - understanding-oriented; IR design, lazy
-  contract, null semantics, validation split, and why there is no SQL backend.
+  contract, null semantics, validation split, and the SQL backend that
+  supersedes the "why no duckdb" verdict.
 - [Reference](docs/reference/) - information-oriented; API, operators,
-  indicators, examples index, notebooks, IR freeze.
+  indicators, examples index, notebooks, IR freeze, duckdb backend.
 
 Notebooks: [`01_first_scan.ipynb`](docs/notebooks/01_first_scan.ipynb) (Jupyter)
 and [`02_first_scan_marimo.py`](docs/notebooks/02_first_scan_marimo.py) (marimo)

@@ -78,7 +78,44 @@ The marketdata-screens Lab UI runs in a polars `LazyFrame` world
 (hotlake polars, parquet scans, `.over("symbol")` everywhere). A duckdb
 backend would be on a different code path with no callsite.
 
-## When would we revisit
+## Revisited 2026-09
+
+The verdict above held for almost a year. The release of the community
+[talib extension for duckdb](https://github.com/duckdb/extension_talib)
+changed the math:
+
+- The hand-rolled CTE cost the old verdict warned about (ema, rsi, atr)
+  no longer applies. The extension exposes `t_*` scalar functions that
+  take a list and return a list, in one O(N) pass per symbol.
+- The benchmark report
+  ([`research/talib_benchmark_2026-09-02.md`](https://github.com/legout/marketdata-screens/blob/master/research/talib_benchmark_2026-09-02.md),
+  marketdata-screens repo) measured the indicator creation cost on the
+  full 25.7M-row lake universe. The `t_*` scalar form is the fastest
+  engine measured: **3.8 s vs 6.0 s for polars native**, vs 4.6 s for
+  polars + py-talib. Cross-engine value parity is high where both
+  engines emit: RSI agrees to <0.5 points everywhere measured, and the
+  Minervini Trend Template scanner matched exactly (493 = 493 hits).
+- `scanlang` 0.3.0 adds the `duckdb_sql` module: a second backend that
+  compiles the same scan-def IR to parameterized SQL, lowers indicators
+  in two tiers (native window for sma/rmin/rmax/shift, `t_*` scalar for
+  the rest), and runs them through the connection's loaded talib
+  extension. See [duckdb backend reference](../reference/duckdb-backend.md)
+  and [how-to: duckdb backend](../how-to/duckdb-backend.md).
+
+The `ta_*` window-aggregate form was benchmarked too and rejected for
+scans: it recomputes per frame and runs 30-35× slower than the `t_*`
+scalar form (125 s vs 3.8 s on the full universe). Dashboard-style
+one-bar responses are its only viable use case; the SQL backend does not
+use it.
+
+The "polars has no Expr→SQL translator" argument is unchanged, but it
+no longer matters — `scanlang` compiles the IR dict directly, never
+polars expressions. What changed is that compiling to SQL is now
+cheaper than compiling to polars on the full universe, and exact-value
+indicators (ht_trendline, the candle patterns, aroon at speed) that
+have no polars-builder equivalent are now first-class.
+
+## When would we revisit (now-obsolete framing)
 
 If a consumer shows up that has the data in duckdb and a polars
 backend is genuinely expensive — usually because they want to push a
@@ -87,10 +124,18 @@ parquet directories, or they want SQL output to feed into another SQL
 pipeline — we'd look at it again. The IR was designed additive; a
 duckdb backend can be a separate package that consumes the same dict.
 
-For now: one backend, one IR, one set of semantics.
+**Status as of 2026-09-02:** the consumer was the marketdata-screens
+lake, the scan-def-to-SQL backend is now in the repo, and the
+`duckdb_sql` module supersedes the paragraphs above. The remainder of
+the page still describes the original reasoning accurately, but the
+conclusion ("no SQL backend") is the one that changed.
 
 ## Where to next
 
+- [duckdb backend reference](../reference/duckdb-backend.md) — the
+  `duckdb_sql` module that supersedes this verdict
+- [how-to: duckdb backend](../how-to/duckdb-backend.md) — install and
+  run a scan against the community talib extension
 - [Lazy contract](lazy-contract.md) — what `compile` returns and where
   it runs
 - [IR design](ir-design.md) — the additive-only contract

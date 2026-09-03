@@ -36,6 +36,13 @@ from scanlang.indicators import INDICATORS
 
 __all__ = ["PROPERTY_CATALOG", "apply", "catalog_from_schema", "compile", "validate"]
 
+
+def _sql_indicators() -> dict:
+    """SQL_INDICATORS, imported lazily (duckdb_sql imports this module)."""
+    from scanlang.duckdb_sql import SQL_INDICATORS
+
+    return SQL_INDICATORS
+
 # Mirrors scoring.score_bars() output columns. dtype: str, int, float, bool, date.
 PROPERTY_CATALOG: dict[str, dict[str, str]] = {
     "symbol": {"label": "Symbol", "dtype": "str"},
@@ -131,7 +138,7 @@ def _operand(spec, *, catalog: dict, partition: str) -> pl.Expr:
     return pl.lit(spec)
 
 
-def _operand_errors(spec, where: str, catalog: dict, errors: list[str]) -> None:
+def _operand_errors(spec, where: str, catalog: dict, errors: list[str], engine: str) -> None:
     if spec is None:
         errors.append(f"{where}: operand must not be null")
     elif isinstance(spec, (bool, int, float, str)):
@@ -144,9 +151,20 @@ def _operand_errors(spec, where: str, catalog: dict, errors: list[str]) -> None:
             errors.append(f"{where}.col: unknown column: {name!r}")
     elif "fn" in spec:
         name = spec["fn"]
-        entry = INDICATORS.get(name) if isinstance(name, str) else None
+        sql = _sql_indicators()
+        entry = None
+        if isinstance(name, str):
+            if name in INDICATORS:
+                entry = INDICATORS[name]
+            elif name in sql:
+                entry = sql[name]
+                if engine != "duckdb":
+                    errors.append(
+                        f"{where}: indicator {name!r} requires engine='duckdb'"
+                    )
         if entry is None:
-            errors.append(f"{where}.fn: unknown indicator: {name!r}")
+            if not isinstance(name, str) or (name not in INDICATORS and name not in sql):
+                errors.append(f"{where}.fn: unknown indicator: {name!r}")
             return
         arg_spec, _builder, required = entry
         args = spec.get("args")
@@ -159,7 +177,7 @@ def _operand_errors(spec, where: str, catalog: dict, errors: list[str]) -> None:
                 if not isinstance(a, int) or isinstance(a, bool) or a < 1:
                     errors.append(f"{where}.args[{i}]: must be an int >= 1, got {a!r}")
             else:
-                _operand_errors(a, f"{where}.args[{i}]", catalog, errors)
+                _operand_errors(a, f"{where}.args[{i}]", catalog, errors, engine)
         for col in required:
             if col not in catalog:
                 errors.append(f"{where}: indicator {name!r} requires column {col!r}")
@@ -171,7 +189,7 @@ def _operand_errors(spec, where: str, catalog: dict, errors: list[str]) -> None:
             errors.append(f"{where}.{ks[0]} must have >= 2 operands")
         else:
             for i, a in enumerate(vals):
-                _operand_errors(a, f"{where}.{ks[0]}[{i}]", catalog, errors)
+                _operand_errors(a, f"{where}.{ks[0]}[{i}]", catalog, errors, engine)
     else:
         errors.append(f"{where}: operand must be col, fn, or arithmetic, got keys {sorted(spec)}")
 
@@ -183,13 +201,13 @@ def _val_ok(dtype: str, value) -> bool:
     return _ok_date(value) if dtype == "date" else _is(dtype, value)
 
 
-def _leaf_errors(f, where: str, catalog: dict, errors: list[str]) -> None:
+def _leaf_errors(f, where: str, catalog: dict, errors: list[str], engine: str) -> None:
     prop = f.get("property")
     op = f.get("op")
     computed_lhs = isinstance(prop, dict)
     spec = catalog.get(prop) if isinstance(prop, str) else None
     if computed_lhs:
-        _operand_errors(prop, f"{where}.property", catalog, errors)
+        _operand_errors(prop, f"{where}.property", catalog, errors, engine)
     elif spec is None:
         errors.append(f"{where}: unknown property: {prop!r}")
     if op not in _OPS and op not in _CROSS:
@@ -197,7 +215,7 @@ def _leaf_errors(f, where: str, catalog: dict, errors: list[str]) -> None:
         return
     value = f.get("value")
     if op in _CROSS:
-        _operand_errors(value, f"{where}.value", catalog, errors)
+        _operand_errors(value, f"{where}.value", catalog, errors, engine)
     elif op in _LIST_OPS:
         if computed_lhs:
             errors.append(f"{where}: computed left side not supported for {op!r}")
@@ -217,7 +235,7 @@ def _leaf_errors(f, where: str, catalog: dict, errors: list[str]) -> None:
         elif not all(_val_ok(dtype, v) for v in value):
             errors.append(f"{where}: 'in' values must be {dtype} values")
     elif isinstance(value, dict):
-        _operand_errors(value, f"{where}.value", catalog, errors)
+        _operand_errors(value, f"{where}.value", catalog, errors, engine)
     elif value is None:
         errors.append(f"{where}: value must not be null")
     elif spec is not None and not _val_ok(spec["dtype"], value):
@@ -230,7 +248,7 @@ def _leaf_errors(f, where: str, catalog: dict, errors: list[str]) -> None:
             errors.append(f"{where}: value for {prop!r} ({dtype}) must be {dtype}, got {value!r}")
 
 
-def _node_errors(node, where: str, catalog: dict, errors: list[str]) -> None:
+def _node_errors(node, where: str, catalog: dict, errors: list[str], engine: str) -> None:
     if not isinstance(node, dict):
         errors.append(f"{where}: node must be an object, got {node!r}")
     elif "all" in node or "any" in node:
@@ -240,17 +258,17 @@ def _node_errors(node, where: str, catalog: dict, errors: list[str]) -> None:
             errors.append(f"{where}.{key} must be a nonempty list")
         else:
             for i, kid in enumerate(kids):
-                _node_errors(kid, f"{where}.{key}[{i}]", catalog, errors)
+                _node_errors(kid, f"{where}.{key}[{i}]", catalog, errors, engine)
     elif "not" in node:
         if not isinstance(node["not"], dict):
             errors.append(f"{where}.not must be an object")
         else:
-            _node_errors(node["not"], f"{where}.not", catalog, errors)
+            _node_errors(node["not"], f"{where}.not", catalog, errors, engine)
     else:
-        _leaf_errors(node, where, catalog, errors)
+        _leaf_errors(node, where, catalog, errors, engine)
 
 
-def _collect(scan_def, *, catalog: dict) -> list[str]:
+def _collect(scan_def, *, catalog: dict, engine: str = "polars") -> list[str]:
     """Collect every validation error in the definition (empty list = valid)."""
     if not isinstance(scan_def, dict):
         return [f"scan definition must be an object, got {scan_def!r}"]
@@ -260,7 +278,7 @@ def _collect(scan_def, *, catalog: dict) -> list[str]:
         errors.append("filters must be a list")
     else:
         for i, node in enumerate(filters):
-            _node_errors(node, f"filters[{i}]", catalog, errors)
+            _node_errors(node, f"filters[{i}]", catalog, errors, engine)
     order_by = scan_def.get("order_by") or []
     if not isinstance(order_by, list):
         errors.append("order_by must be a list")
@@ -279,7 +297,7 @@ def _collect(scan_def, *, catalog: dict) -> list[str]:
     return errors
 
 
-def validate(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG) -> list[str]:
+def validate(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, engine: str = "polars") -> list[str]:
     """Validate a scan definition against the catalog without compiling it.
 
     Returns a list of error strings (empty = valid). Each error is keyed to
@@ -288,12 +306,20 @@ def validate(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG) -> list[str]:
     (dtype-checked, never a polars error at filter time); structural on
     computed operands (a wrong-dtype join surfaces at collect time).
 
+    With ``engine="duckdb"`` indicator names that exist only in
+    ``scanlang.duckdb_sql.SQL_INDICATORS`` (``macd``, ``bbands_upper``,
+    ``bbands_lower``, ``adx``, ``aroon``, ``cdlengulfing``,
+    ``ht_trendline``) validate OK; under the default ``engine="polars"``
+    they produce ``indicator 'adx' requires engine='duckdb'``.
+
     Args:
         scan_def: A scan-def dict (``{"filters": [...], "order_by": ...,
             "limit": ...}``) or any object that has the same shape (UI
             drafts, JSON from the Lab, parser output).
         catalog: Property -> ``{"label", "dtype"}`` mapping. Default
             ``PROPERTY_CATALOG`` (mirrors ``score_bars`` output).
+        engine: ``"polars"`` (default) or ``"duckdb"``. Selects which
+            indicator registry defines the accepted ``{"fn": ...}`` names.
 
     Returns:
         A list of error strings. Empty list == valid.
@@ -304,7 +330,7 @@ def validate(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG) -> list[str]:
         >>> validate({"filters": [{"property": "score", "op": "~=", "value": 40}]})
         ["filters[0]: unknown operator: '~='"]
     """
-    return _collect(scan_def, catalog=catalog)
+    return _collect(scan_def, catalog=catalog, engine=engine)
 
 
 # --- compilation -----------------------------------------------------------
@@ -354,7 +380,7 @@ def _compile_node(node, *, catalog: dict, partition: str) -> pl.Expr:
     return _compile_leaf(node, catalog=catalog, partition=partition)
 
 
-def compile(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, partition: str = "symbol") -> pl.Expr:
+def compile(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, partition: str = "symbol", engine: str = "polars") -> pl.Expr:
     """Compile a scan definition into a single polars predicate expression.
 
     ANDs the top-level ``filters`` list into one ``pl.Expr``. Validates the
@@ -368,6 +394,11 @@ def compile(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, partition: str 
         catalog: Property -> ``{"label", "dtype"}`` mapping.
         partition: Column name for window ops (``rsi``, ``ema``, ``atr``,
             ``cross_above``, ...). Every window op becomes ``.over(partition)``.
+        engine: Which indicator registry validates ``{"fn": ...}`` names
+            (see [`validate`](api.md#scanlang.compiler.validate)). Only
+            ``"polars"`` (default) yields a compilable predicate — this is
+            the polars engine; the kwarg exists for API consistency with
+            ``validate`` and ``compile_sql``.
 
     Returns:
         A single ``pl.Expr`` predicate. Apply with
@@ -384,7 +415,7 @@ def compile(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, partition: str 
         >>> pl.DataFrame({"score": [10, 50]}).filter(expr).height
         1
     """
-    errors = _collect(scan_def, catalog=catalog)
+    errors = _collect(scan_def, catalog=catalog, engine=engine)
     if errors:
         raise ValueError(errors[0])
     expr = pl.lit(True)
@@ -393,7 +424,7 @@ def compile(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, partition: str 
     return expr
 
 
-def apply(frame: pl.DataFrame | pl.LazyFrame, scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, partition: str = "symbol") -> pl.DataFrame | pl.LazyFrame:
+def apply(frame: pl.DataFrame | pl.LazyFrame, scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, partition: str = "symbol", engine: str = "polars") -> pl.DataFrame | pl.LazyFrame:
     """Filter + ``order_by`` + ``limit`` a frame by a scan definition.
 
     Shape-preserving: ``DataFrame`` in -> ``DataFrame`` out,
@@ -407,6 +438,8 @@ def apply(frame: pl.DataFrame | pl.LazyFrame, scan_def: dict, *, catalog: dict =
         scan_def: A scan-def dict. Must pass ``validate()``.
         catalog: Property -> ``{"label", "dtype"}`` mapping.
         partition: Column name for window ops and the sort key.
+        engine: Which indicator registry validates ``{"fn": ...}`` names;
+            forwarded to ``compile()`` (see its docstring).
 
     Returns:
         A frame of the same kind as the input, with the scan applied.
@@ -427,7 +460,7 @@ def apply(frame: pl.DataFrame | pl.LazyFrame, scan_def: dict, *, catalog: dict =
         │ A      ┆ 60    │
         └────────┴───────┘
     """
-    out = frame.filter(compile(scan_def, catalog=catalog, partition=partition))
+    out = frame.filter(compile(scan_def, catalog=catalog, partition=partition, engine=engine))
     order_by = scan_def.get("order_by") or []
     if order_by:
         keys = [ob["property"] for ob in order_by]

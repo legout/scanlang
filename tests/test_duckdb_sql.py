@@ -239,3 +239,104 @@ def test_sql_registry_mirrors_indicators():
         assert INDICATORS[name][0] == arg_spec
         assert INDICATORS[name][2] == req
     assert set(SQL_INDICATORS) == set(INDICATORS)
+
+
+# --- review round 1 regressions (card comment repros A-J) -------------------
+
+
+def test_cross_with_literal_operand(con):
+    """Repros A/F: cross against a literal — fragment renders once, params bind once."""
+    df = _bars()
+    mature = str(T0 + dt.timedelta(days=MATURE))
+    for value in (11.0, {"col": "close"}):
+        d = {"filters": [
+            {"property": "session", "op": ">=", "value": mature},
+            {"property": "close", "op": "cross_above", "value": value},
+        ]}
+        assert _pl_hits(df, d) == _sql_hits(con, d), value
+    d = {"filters": [
+        {"property": "session", "op": ">=", "value": mature},
+        {"property": {"fn": "rsi", "args": [{"col": "close"}, 14]}, "op": "cross_above", "value": 70},
+    ]}
+    assert _pl_hits(df, d) == _sql_hits(con, d)
+
+
+def test_cross_literal_inside_groups(con):
+    """Repro G: cross-with-literal inside not/any groups."""
+    df = _bars()
+    d = {"filters": [
+        {"property": "session", "op": ">=", "value": str(T0 + dt.timedelta(days=MATURE))},
+        {"not": {"property": "close", "op": "cross_below", "value": 12.0}},
+        {"any": [
+            {"property": "close", "op": "cross_above", "value": 11.0},
+            {"property": "symbol", "op": "==", "value": "AAA"},
+        ]},
+    ]}
+    assert _pl_hits(df, d) == _sql_hits(con, d)
+
+
+def test_cross_then_tier_sibling(con):
+    """Cross alias columns survive a later t-tier CTE's projection restructure."""
+    df = _bars()
+    d = {"filters": [
+        {"property": "session", "op": ">=", "value": str(T0 + dt.timedelta(days=MATURE))},
+        {"property": "close", "op": "cross_above", "value": 11.0},
+        {"property": {"fn": "rsi", "args": [{"col": "close"}, 14]}, "op": "<", "value": 100},
+    ]}
+    assert _pl_hits(df, d) == _sql_hits(con, d)
+
+
+def test_sibling_filters_across_tiers(con):
+    """Repros B/D: siblings after a t-tier fn (cols discovered later, w-then-t aliases)."""
+    df = _bars()
+    cat = catalog_from_schema(df)
+    mature = str(T0 + dt.timedelta(days=MATURE))
+    # Repro B shape uses ema/rsi whose warm-up rows diverge by contract, so the
+    # session guard scopes to the mature window where both engines agree.
+    d_b = {"filters": [
+        {"property": "session", "op": ">=", "value": mature},
+        {"property": {"fn": "ema", "args": [{"col": "close"}, 14]}, "op": ">", "value": 0},
+        {"property": {"fn": "rsi", "args": [{"col": "close"}, 14]}, "op": "<", "value": 100},
+        {"property": "volume", "op": ">", "value": 0},
+    ]}
+    assert _pl_hits(df, d_b) == _sql_hits(con, d_b, catalog=cat)
+    d_d = {"filters": [
+        {"property": "session", "op": ">=", "value": mature},
+        {"property": {"fn": "sma", "args": [{"col": "close"}, 20]}, "op": ">", "value": 0},
+        {"property": {"fn": "ema", "args": [{"col": "close"}, 14]}, "op": ">", "value": 0},
+        {"property": "volume", "op": ">", "value": 0},
+    ]}
+    assert _pl_hits(df, d_d) == _sql_hits(con, d_d, catalog=cat)
+
+
+def test_plain_leaf_after_fn_leaf(con):
+    """fn leaf then plain-column leaf: the plain column reaches earlier CTEs.
+
+    sma (not ema): rolling warm-up NULLs identically on both engines, so the
+    full-frame hit sets must match exactly — ema's pre-lookback rows diverge
+    by the documented warm-up contract.
+    """
+    df = _bars()
+    d = {"filters": [
+        {"property": {"fn": "sma", "args": [{"col": "close"}, 20]}, "op": ">", "value": 0},
+        {"property": "volume", "op": ">", "value": 0},
+    ]}
+    pol = apply(df, d, catalog=catalog_from_schema(df))
+    sql = apply_sql(con, d, relation="bars", catalog=catalog_from_schema(df))
+    assert pol.select("symbol", "session").sort("symbol", "session").rows() == (
+        sql.select("symbol", "session").sort("symbol", "session").rows()
+    )
+
+
+def test_order_by_unreferenced_column(con):
+    """Repro J: order_by on a column no filter references (+ empty filters)."""
+    df = _bars()
+    d = {"filters": [{"property": "symbol", "op": "==", "value": "AAA"}],
+         "order_by": [{"property": "volume", "dir": "desc"}], "limit": 5}
+    pol = apply(df, d, catalog=catalog_from_schema(df))
+    sql = apply_sql(con, d, relation="bars", catalog=catalog_from_schema(df))
+    assert pol.select("symbol", "session").rows() == sql.select("symbol", "session").rows()
+    d2 = {"filters": [], "order_by": [{"property": "close", "dir": "desc"}], "limit": 3}
+    pol2 = apply(df, d2, catalog=catalog_from_schema(df))
+    sql2 = apply_sql(con, d2, relation="bars", catalog=catalog_from_schema(df))
+    assert pol2.select("symbol", "session").rows() == sql2.select("symbol", "session").rows()

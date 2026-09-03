@@ -21,7 +21,11 @@ mirrors the ``INDICATORS`` entry contract; ``INDICATORS`` stays polars-only):
   CTE, ``t_fn`` over the lists, unnest back (the benchmark's fastest form;
   ``ta_*`` window functions are 30-35x slower and are not used). ``t_*``
   front-pads its result to input length, so unnest against the session list
-  is row-aligned — warm-up rows come back NULL, like polars.
+  is row-aligned. Warm-up rows come back NULL until the lookback fills —
+  unlike the polars engine's ``ema`` (``ewm_mean(adjust=False)``), which
+  emits from bar 0, so pre-lookback rows diverge for ``ema`` by design
+  (the accepted warm-up contract, Q1 of the 2026-09-02 plan; hit-set
+  equality is therefore only claimed for sma-family scans).
 
 Nested computed operands (``sma(rsi(close, 14), 5)``) stage as successive
 row-aligned CTEs — one column per indicator call. The probe answer
@@ -138,13 +142,18 @@ take ``(x, n, partition, order_column, params)``. Extend by insertion —
 class _Gen:
     """Stages the scan as successive row-aligned CTEs; collects '?' params.
 
-    Params split by TEXT position: ``params`` feeds the CTE region (emitted
-    before the final SELECT), ``tail`` feeds WHERE + LIMIT. ``sink`` points
-    at whichever region the currently-generated text renders in — operand
-    literals inside ``fn()`` args land in the CTE text, the same operand
-    shapes inside a leaf's predicate land in WHERE. ``flush()`` emits
-    consecutive same-tier runs as one CTE each, in staging order, so param
-    order always matches text order.
+    Staging is DEFERRED: walkers append emitters to ``pending`` and
+    ``compile_sql`` calls ``flush()`` once, after the whole walk — every CTE
+    is then assembled from the FINAL ``cols``/``computed`` sets, so columns
+    or aliases discovered after a fn was walked still ride through its CTE
+    (mid-walk snapshots were the source of dropped-column binder errors).
+    Emitters run in walk order, which is dependency order (an operand's fn
+    is always walked before its consumer). Params split by TEXT position:
+    ``params`` feeds the CTE region (emitted before the final SELECT),
+    ``tail`` feeds WHERE + LIMIT. ``sink`` points at whichever region the
+    currently-generated text renders in — operand literals inside ``fn()``
+    args and cross operands land in the CTE text, leaf predicates land in
+    WHERE — so param order always matches text order.
     """
 
     def __init__(self, catalog: dict, partition: str, order_column: str):
@@ -157,43 +166,78 @@ class _Gen:
         self.sink = self.params
         self.ctes: list[str] = []
         self.prev = "s0"
-        self.pending: list[tuple[str, str, str]] = []  # (tier, inner, outer) frags
+        self.pending: list[Callable[[], None]] = []  # deferred CTE emitters
         self.computed: list[str] = []  # aliases materialized so far
         self.n = 0  # alias counter
         self.stage = 0
 
     def flush(self) -> None:
-        """Emit pending indicator frags as CTEs (consecutive same-tier runs)."""
-        items, self.pending = self.pending, []
-        i = 0
-        while i < len(items):
-            tier = items[i][0]
-            run = []
-            while i < len(items) and items[i][0] == tier:
-                run.append(items[i])
-                i += 1
+        """Emit every staged CTE, in walk order (called once, after the walk)."""
+        for emit in self.pending:
+            emit()
+
+    def _emit_w(self, expr: str, alias: str) -> None:
+        """Window-tier CTE; ``SELECT *`` carries every earlier column/alias."""
+        def emit() -> None:
+            self.stage += 1
+            self.ctes.append(f"s{self.stage} AS (SELECT *, {expr} FROM {self.prev})")
+            self.prev = f"s{self.stage}"
+            self.computed.append(alias)
+
+        self.pending.append(emit)
+
+    def _emit_t(self, list_frag: str, unnest_frag: str, alias: str) -> None:
+        """t_*-tier CTE: per-partition lists, t_fn over them, unnest back.
+
+        Reads ``self.cols``/``self.computed`` at flush time (final values),
+        so sibling filters compiled after this fn still find their columns
+        and every earlier alias here.
+        """
+        def emit() -> None:
+            bases = sorted(self.cols - {self.p, self.o})
+            inner = [f"list({_q(c)} ORDER BY {_q(self.o)}) AS _b{i}" for i, c in enumerate(bases)]
+            outer = [f"unnest(_b{i}) AS {_q(c)}" for i, c in enumerate(bases)]
+            for i, a in enumerate(self.computed):
+                inner.append(f"list({_q(a)} ORDER BY {_q(self.o)}) AS _c{i}")
+                outer.append(f"unnest(_c{i}) AS {_q(a)}")
             self.stage += 1
             name = f"s{self.stage}"
-            if tier == "w":
-                body = f"SELECT *, {', '.join(f[1] for f in run)} FROM {self.prev}"
-            else:
-                bases = sorted(self.cols - {self.p, self.o})
-                inner = [f"list({_q(c)} ORDER BY {_q(self.o)}) AS _b{i2}" for i2, c in enumerate(bases)]
-                outer = [f"unnest(_b{i2}) AS {_q(c)}" for i2, c in enumerate(bases)]
-                for i3, a in enumerate(self.computed):
-                    inner.append(f"list({_q(a)} ORDER BY {_q(self.o)}) AS _c{i3}")
-                    outer.append(f"unnest(_c{i3}) AS {_q(a)}")
-                outer += [f[2] for f in run]
-                body = (
-                    f"SELECT {_q(self.p)}, unnest(_o) AS {_q(self.o)}, {', '.join(outer)} "
-                    f"FROM (SELECT {_q(self.p)}, "
-                    f"list({_q(self.o)} ORDER BY {_q(self.o)}) AS _o, "
-                    f"{', '.join(inner + [f[1] for f in run])} "
-                    f"FROM {self.prev} GROUP BY {_q(self.p)})"
-                )
-                self.computed += [f[2].split(" AS ")[1] for f in run]
-            self.ctes.append(f"{name} AS ({body})")
+            self.ctes.append(
+                f"{name} AS (SELECT {_q(self.p)}, unnest(_o) AS {_q(self.o)}, {', '.join(outer + [unnest_frag])} "
+                f"FROM (SELECT {_q(self.p)}, "
+                f"list({_q(self.o)} ORDER BY {_q(self.o)}) AS _o, "
+                f"{', '.join(inner + [list_frag])} "
+                f"FROM {self.prev} GROUP BY {_q(self.p)}))"
+            )
             self.prev = name
+            self.computed.append(alias)
+
+        self.pending.append(emit)
+
+    def _emit_x(self, lhs: str, rhs: str, xa: str, xb: str, la: str, lb: str) -> None:
+        """Cross CTE: materialize both operands, then lag the columns.
+
+        The inner projection renders each operand fragment exactly ONCE (its
+        params bind once — repeating the fragment inside ``lag`` would demand
+        its params twice); the outer SELECT lags the materialized columns
+        (window functions cannot nest, hence the staging). The WHERE
+        predicate references only the fresh alias columns, so operand
+        literals never re-render outside the CTE.
+        """
+
+        def emit() -> None:
+            w = f"PARTITION BY {_q(self.p)} ORDER BY {_q(self.o)}"
+            self.stage += 1
+            self.ctes.append(
+                f"s{self.stage} AS (SELECT *, lag({xa}, 1) OVER ({w}) AS {la}, "
+                f"lag({xb}, 1) OVER ({w}) AS {lb} "
+                f"FROM (SELECT *, {lhs} AS {xa}, {rhs} AS {xb} FROM {self.prev}))"
+            )
+            self.prev = f"s{self.stage}"
+            # all four ride through later t-tier CTEs (WHERE references them)
+            self.computed += [xa, xb, la, lb]
+
+        self.pending.append(emit)
 
     def operand(self, spec) -> str:
         if isinstance(spec, dict):
@@ -222,15 +266,14 @@ class _Gen:
                     n = a
                 else:
                     pos.append(self.operand(a))
-            self.flush()  # operand columns materialized before this call stages
             alias = f"c{self.n}"
             expr = builder(pos[0] if pos else None, n, self.p, self.o, self.params)
         finally:
             self.sink = outer_sink
         if name in _WINDOW:
-            self.pending.append(("w", f"{expr} AS {alias}", alias))
+            self._emit_w(f"{expr} AS {alias}", alias)
         else:
-            self.pending.append(("t", f"{expr} AS _v{self.n}", f"unnest(_v{self.n}) AS {alias}"))
+            self._emit_t(f"{expr} AS _v{self.n}", f"unnest(_v{self.n}) AS {alias}", alias)
         self.n += 1
         return alias
 
@@ -241,34 +284,26 @@ class _Gen:
             self.cols.add(prop)
             lhs, dtype = _q(prop), self.cat[prop]["dtype"]
         else:
-            # computed LHS: text renders in WHERE (tail) — or inside the cross
-            # lag CTE (params region) when staging
+            # computed LHS: renders in the cross CTE (params) or in WHERE (tail)
             outer, self.sink = self.sink, self.params if cross else self.tail
             try:
                 lhs, dtype = self.operand(prop), None
             finally:
                 self.sink = outer
         if cross:
-            outer, self.sink = self.sink, self.params
+            # offset 1 is compiler-structural (freeze: previous bar)
+            xa, xb = f"x{self.n}a", f"x{self.n}b"
+            la, lb = f"x{self.n}c", f"x{self.n}d"
+            outer, self.sink = self.sink, self.params  # operands render in CTE text
             try:
                 rhs = self.operand(f["value"])
+                self._emit_x(lhs, rhs, xa, xb, la, lb)
             finally:
                 self.sink = outer
-            self.flush()
-            self.stage += 1
-            name = f"s{self.stage}"
-            w = f"PARTITION BY {_q(self.p)} ORDER BY {_q(self.o)}"
-            la, lb = f"x{self.n}a", f"x{self.n}b"
-            # offset 1 is compiler-structural (freeze: previous bar), not user data
-            self.ctes.append(
-                f"{name} AS (SELECT *, lag({lhs}, 1) OVER ({w}) AS {la}, "
-                f"lag({rhs}, 1) OVER ({w}) AS {lb} FROM {self.prev})"
-            )
-            self.prev = name
             self.n += 1
             if op == "cross_above":
-                return f"({lhs} > {rhs} AND {la} <= {lb})"
-            return f"({lhs} < {rhs} AND {la} >= {lb})"
+                return f"({xa} > {xb} AND {la} <= {lb})"
+            return f"({xa} < {xb} AND {la} >= {lb})"
         # remaining predicate text renders in the final SELECT -> tail region
         outer, self.sink = self.sink, self.tail
         try:
@@ -304,19 +339,6 @@ class _Gen:
         if "not" in nd:
             return f"(NOT {self.node(nd['not'])})"
         return self.leaf(nd)
-
-
-def _required_cols(node, out: set[str]) -> None:
-    """Collect every indicator's required columns up front, so a t-tier CTE
-    emitted early still projects the columns later indicators need."""
-    if isinstance(node, dict):
-        if "fn" in node and node["fn"] in SQL_INDICATORS:
-            out.update(SQL_INDICATORS[node["fn"]][2])
-        for v in node.values():
-            _required_cols(v, out)
-    elif isinstance(node, list):
-        for v in node:
-            _required_cols(v, out)
 
 
 def compile_sql(
@@ -360,8 +382,8 @@ def compile_sql(
             f"relation must be a plain identifier matching [A-Za-z_][A-Za-z0-9_]*, got {relation!r}"
         )
     g = _Gen(catalog, partition, order_column)
-    _required_cols(scan_def, g.cols)
     preds = [g.node(nd) for nd in (scan_def.get("filters") or [])]
+    g.cols.update(ob["property"] for ob in scan_def.get("order_by") or [])
     g.flush()
     cols = ", ".join(_q(c) for c in sorted(g.cols))
     sql = "WITH s0 AS (SELECT " + cols + f" FROM {relation})"

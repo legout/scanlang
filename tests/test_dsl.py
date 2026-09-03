@@ -127,6 +127,46 @@ def test_corpus_sma_stack():
     assert validate(d) == []
 
 
+def test_corpus_adr_query():
+    """Qullamaggie 'Biggest Gainers' shape: adr(20) parses as adr(close, 20)."""
+    cat = {**CORPUS_CATALOG, "vol": {"label": "Vol", "dtype": "float"},
+           "adr": {"label": "ADR", "dtype": "float"}}
+    d = parse("close>4 AND sma(50,vol)>250000 AND adr(20)>4", catalog=cat)
+    adr_leaf = d["filters"][0]["all"][2]
+    assert adr_leaf == {
+        "property": {"fn": "adr", "args": [{"col": "close"}, 20]},
+        "op": ">",
+        "value": 4,
+    }
+    assert validate(d, catalog={**cat, "high": {"label": "High", "dtype": "float"},
+                                "low": {"label": "Low", "dtype": "float"}}) == []
+
+
+def test_corpus_roc_natr_slope_query():
+    """Corpus shape: slope(10, expr) reorders to (expr, 10); roc/natr default close."""
+    cat = {**CORPUS_CATALOG, "high": {"label": "High", "dtype": "float"},
+           "low": {"label": "Low", "dtype": "float"}}
+    d = parse("roc(60)>50 AND natr(14)<8 AND slope(10,sma(200))>0", catalog=cat)
+    leaves = d["filters"][0]["all"]
+    assert leaves[0]["property"] == {"fn": "roc", "args": [{"col": "close"}, 60]}
+    assert leaves[1]["property"] == {"fn": "natr", "args": [{"col": "close"}, 14]}
+    assert leaves[2]["property"] == {
+        "fn": "slope",
+        "args": [{"fn": "sma", "args": [{"col": "close"}, 200]}, 10],
+    }
+    assert validate(d, catalog=cat) == []
+
+
+def test_sql_only_name_parses_and_validates_engine_fit():
+    """SQL-only names parse as fn calls; validate() is the engine gate."""
+    d = p("adx(14)>25")
+    assert d["filters"][0]["property"] == {"fn": "adx", "args": [14]}
+    assert "indicator 'adx' requires engine='duckdb'" in validate(d)[0]
+    # engine fit ok, but the required OHLC cols are still demanded from the catalog
+    errs = validate(d, engine="duckdb")
+    assert any("requires column 'high'" in e for e in errs)
+
+
 def test_corpus_52w_high():
     # max(252, close): corpus (n, expr) order, explicit col beats close default
     d = p("close=max(252,close)")

@@ -10,24 +10,31 @@ section "Text DSL front-end (frozen 2026-08-30, second session)":
 Parse errors raise SyntaxError with a 1-based position. Semantic checks
 (unknown column, bad arg counts, dtypes) stay in scanlang.compiler.validate().
 
-Number-first args on ema/sma/rmin/rmax (and min/max sugar): a single number
-arg inserts the close column (ema(20) -> ema(close, 20)); a leading number
-with a second arg is corpus order (n, expr) and normalizes to canonical
-(expr, n) — sma(200, close(22)) -> sma(shift(close, 22), 200),
-max(252, close) -> rmax(close, 252).
+Number-first args on ema/sma/rmin/rmax and the C3 corpus names adr/roc/
+natr/slope: a single number arg inserts the close column (ema(20) ->
+ema(close, 20); adr(20) -> adr(close, 20)); a leading number with a second
+arg is corpus order (n, expr) and normalizes to canonical (expr, n) —
+sma(200, close(22)) -> sma(shift(close, 22), 200), slope(10, sma(200)) ->
+slope(sma(close, 200), 10), max(252, close) -> rmax(close, 252).
+
+Talib-only indicator names (macd, bbands_upper/lower, adx, aroon,
+cdlengulfing, ht_trendline — SQL_INDICATORS registry) parse as fn calls
+too; validate() stays the single gate for engine fit (the polars engine
+rejects them). Grammar rule: ``name`` in EITHER registry resolves as an
+indicator call before the column-lookback fallback.
 """
 
 from __future__ import annotations
 
 from typing import Any, NamedTuple
 
-from scanlang.compiler import PROPERTY_CATALOG
+from scanlang.compiler import PROPERTY_CATALOG, _sql_indicators
 from scanlang.indicators import INDICATORS
 
 __all__ = ["parse"]
 
 # indicators whose number-first args imply the close column
-_CLOSE_DEFAULT = frozenset({"ema", "sma", "rmin", "rmax"})
+_CLOSE_DEFAULT = frozenset({"ema", "sma", "rmin", "rmax", "adr", "roc", "natr", "slope"})
 _SUGAR = {"min": "rmin", "max": "rmax"}
 _CROSS = ("cross_above", "cross_below")
 _FLIP = {">": "<", "<": ">", ">=": "<=", "<=": ">=", "==": "==", "!=": "!="}
@@ -314,7 +321,9 @@ class _Parser:
         return self._postfix(node)
 
     # name(...): INDICATORS name -> call; min/max -> rmin/rmax; cross_* -> leaf
-    # marker; catalog column -> col + lookback (close(1) -> shift(close, 1))
+    # marker; catalog column -> col + lookback (close(1) -> shift(close, 1)).
+    # SQL-only indicator names (macd, adx, ...) parse as calls too — validate()
+    # stays the gate for engine fit.
     def _call(self, name: str, pos: int):
         self._expect("(")
         args = []
@@ -333,6 +342,8 @@ class _Parser:
                 raise SyntaxError(f"{name}() takes 2 args at position {pos}")
             return {"__cross__": name, "op": name, "args": args, "pos": pos}
         if name in INDICATORS:
+            return {"fn": name, "args": self._default_close(name, args)}
+        if name in _sql_indicators():
             return {"fn": name, "args": self._default_close(name, args)}
         if name in self.catalog:
             if (

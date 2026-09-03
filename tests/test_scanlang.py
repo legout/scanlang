@@ -90,6 +90,29 @@ def test_computed_operand_cross_and_arithmetic():
     assert set(out2["symbol"]) == {"AAA"}  # close*2 > close+50 iff close > 50
 
 
+def test_cross_literal_operand_matches_constant_lag():
+    """A literal RHS has no previous bar: both cross directions compare against the constant.
+
+    Regression: rhs.shift(1).over(p) nulled pl.lit(v) on every row, so every
+    literal-RHS cross silently returned empty (review round 2, SQL engine was
+    correct, polars was wrong).
+    """
+    bars = _bars().lazy()  # AAA uptrend 10,11,...; BBB flat 50
+    # crosses above 11.0 at bar 2 (close[1]=11 <= 11 < close[2]=12)
+    up = {"filters": [{"property": "close", "op": "cross_above", "value": 11.0}]}
+    out = apply(bars, up, catalog=catalog_from_schema(bars)).collect()
+    assert out["symbol"].to_list() == ["AAA"]
+    assert out["session"].to_list() == [T0 + dt.timedelta(days=2)]
+    # an uptrend never crosses below a constant, so descend via negated close:
+    # -10, -11, ... crosses below -10.5 at bar 1
+    down = {"filters": [
+        {"property": {"*": [{"col": "close"}, -1]}, "op": "cross_below", "value": -10.5},
+    ]}
+    out = apply(bars, down, catalog=catalog_from_schema(bars)).collect()
+    assert out["symbol"].to_list() == ["AAA"]
+    assert out["session"].to_list() == [T0 + dt.timedelta(days=1)]
+
+
 def test_custom_partition_and_rsi():
     bars = _bars().rename({"symbol": "sym"})
     d = {"filters": [

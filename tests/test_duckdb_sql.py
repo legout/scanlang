@@ -245,45 +245,61 @@ def test_sql_registry_mirrors_indicators():
 
 
 def test_cross_with_literal_operand(con):
-    """Repros A/F: cross against a literal — fragment renders once, params bind once."""
+    """Repros A/F: cross against a literal — fragment renders once, params bind once, hits non-empty.
+
+    No session guard on the close shapes: close is exact-tier (no warm-up
+    divergence) and AAA's only close×11.0 cross sits at day 21 — the round-1
+    version guarded past it and passed as a vacuous 0==0 (review round 2).
+    """
     df = _bars()
-    mature = str(T0 + dt.timedelta(days=MATURE))
-    for value in (11.0, {"col": "close"}):
-        d = {"filters": [
-            {"property": "session", "op": ">=", "value": mature},
-            {"property": "close", "op": "cross_above", "value": value},
-        ]}
-        assert _pl_hits(df, d) == _sql_hits(con, d), value
+    d = {"filters": [{"property": "close", "op": "cross_above", "value": 11.0}]}
+    golden = [("AAA", T0 + dt.timedelta(days=21))]  # close[20]=11.0 <= 11.0 < close[21]=11.05
+    assert _pl_hits(df, d) == golden == _sql_hits(con, d)
+    d = {"filters": [{"property": "close", "op": "cross_above",
+                      "value": {"fn": "sma", "args": [{"col": "close"}, 30]}}]}
+    hits = _sql_hits(con, d)
+    assert hits and hits == _pl_hits(df, d)  # BBB/CCC sawtooth keeps crossing its sma30
     d = {"filters": [
-        {"property": "session", "op": ">=", "value": mature},
-        {"property": {"fn": "rsi", "args": [{"col": "close"}, 14]}, "op": "cross_above", "value": 70},
+        {"property": "session", "op": ">=", "value": str(T0 + dt.timedelta(days=MATURE))},
+        {"property": {"fn": "rsi", "args": [{"col": "close"}, 14]}, "op": "cross_above", "value": 50},
     ]}
-    assert _pl_hits(df, d) == _sql_hits(con, d)
+    hits = _sql_hits(con, d)  # BBB/CCC oscillate across RSI 50; 70 never crosses on this frame
+    assert hits and hits == _pl_hits(df, d)
 
 
 def test_cross_literal_inside_groups(con):
-    """Repro G: cross-with-literal inside not/any groups."""
+    """Repro G: cross-with-literal inside not/any groups — non-vacuous (round 2)."""
     df = _bars()
     d = {"filters": [
-        {"property": "session", "op": ">=", "value": str(T0 + dt.timedelta(days=MATURE))},
-        {"not": {"property": "close", "op": "cross_below", "value": 12.0}},
+        {"not": {"property": "close", "op": "cross_below", "value": 60.0}},
         {"any": [
             {"property": "close", "op": "cross_above", "value": 11.0},
-            {"property": "symbol", "op": "==", "value": "AAA"},
+            {"property": "symbol", "op": "==", "value": "CCC"},
         ]},
     ]}
-    assert _pl_hits(df, d) == _sql_hits(con, d)
+    hits = _pl_hits(df, d)
+    assert hits == _sql_hits(con, d)
+    # all mature CCC bars ride in on symbol==CCC (row 0 is dropped by the
+    # NOT-cross warm-up NULL, identically in both engines) + AAA's day-21 cross
+    assert ("AAA", T0 + dt.timedelta(days=21)) in hits and len(hits) == 300
 
 
 def test_cross_then_tier_sibling(con):
-    """Cross alias columns survive a later t-tier CTE's projection restructure."""
+    """Cross alias columns survive a later t-tier CTE's projection restructure.
+
+    RHS is sma (exact-tier) instead of a literal: the original close×11.0
+    crossed only at day 21, so the MATURE guard (needed for the rsi sibling)
+    scoped past it and the assert could not fail (review round 2).
+    """
     df = _bars()
     d = {"filters": [
         {"property": "session", "op": ">=", "value": str(T0 + dt.timedelta(days=MATURE))},
-        {"property": "close", "op": "cross_above", "value": 11.0},
+        {"property": "close", "op": "cross_above",
+         "value": {"fn": "sma", "args": [{"col": "close"}, 30]}},
         {"property": {"fn": "rsi", "args": [{"col": "close"}, 14]}, "op": "<", "value": 100},
     ]}
-    assert _pl_hits(df, d) == _sql_hits(con, d)
+    hits = _sql_hits(con, d)
+    assert hits and hits == _pl_hits(df, d)
 
 
 def test_sibling_filters_across_tiers(con):

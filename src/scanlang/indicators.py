@@ -14,9 +14,10 @@ exact-value parity on collected results — it cannot participate in lazy pushdo
 
 Seeding note (``ema``/``rsi``/``atr``): TA-Lib seeds its recursions with an SMA
 of the first ``n`` values; polars ``ewm_mean(adjust=False)`` seeds from the
-first value. The recursions match, so values converge after warm-up
-(typically ~3-4x the period) but diverge in the early window — accepted by
-design, see the 2026-09-02 duckdb-backend plan (Q1).
+first value. The recursions match, so values converge after warm-up — on the
+convergence test's series all three stay within 0.01 of the TA-Lib-style
+reference from bar ~7.6n onward — but diverge in the early window. Accepted
+by design, see the 2026-09-02 duckdb-backend plan (Q1).
 """
 
 from __future__ import annotations
@@ -32,7 +33,12 @@ def _rsi(e: pl.Expr, n: int, partition: str) -> pl.Expr:
     delta = e.diff().over(partition)
     gain = delta.clip(lower_bound=0).ewm_mean(alpha=1 / n, adjust=False).over(partition)
     loss = (-delta.clip(upper_bound=0)).ewm_mean(alpha=1 / n, adjust=False).over(partition)
-    return 100 - 100 / (1 + gain / loss)
+    # Zero-loss guard: avgLoss == 0 -> RSI 100 (math limit when avgGain > 0;
+    # deliberate 100 for the flat 0/0 case — the raw formula yields NaN there,
+    # and polars keeps NaN rows in `>` filters, so flat symbols would pass a
+    # `rsi > 85` scan). Null cond (warm-up) takes the otherwise branch, so the
+    # bar-0 null survives.
+    return pl.when(loss == 0).then(100.0).otherwise(100 - 100 / (1 + gain / loss))
 
 
 def _atr(n: int, partition: str) -> pl.Expr:

@@ -97,7 +97,16 @@ def test_custom_partition_and_rsi():
     ]}
     assert validate(d, catalog=catalog_from_schema(bars)) == []
     out = apply(bars.lazy(), d, catalog=catalog_from_schema(bars), partition="sym").collect()
-    assert len(out) == 118  # 1 warm-up null per symbol (first bar: diff is null)
+    assert len(out) == 118  # bar-0 warm-up null per symbol; post-warm-up rsi is 100
+    # pin the zero-loss guard (0/0 would otherwise be NaN, and NaN rows
+    # survive `>` filters): uptrend AAA is pure gains -> avgLoss 0 -> 100;
+    # flat BBB is 0/0 -> 100 by the guard, never NaN.
+    rsi_vals = (
+        _bars().with_columns(r=INDICATORS["rsi"][1](pl.col("close"), 14, "symbol"))["r"].to_list()
+    )
+    assert rsi_vals[0] is None  # warm-up: diff is null
+    assert rsi_vals[1] == 100.0  # AAA uptrend: avgLoss == 0
+    assert rsi_vals[-1] == 100.0  # BBB flat: 0/0 guard
 
 
 def test_list_value_ops_compile_and_apply():

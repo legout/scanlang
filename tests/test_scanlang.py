@@ -97,7 +97,7 @@ def test_custom_partition_and_rsi():
     ]}
     assert validate(d, catalog=catalog_from_schema(bars)) == []
     out = apply(bars.lazy(), d, catalog=catalog_from_schema(bars), partition="sym").collect()
-    assert len(out) == 118  # 2 warm-up nulls per symbol (rsi undefined before n diffs)
+    assert len(out) == 118  # 1 warm-up null per symbol (first bar: diff is null)
 
 
 def test_list_value_ops_compile_and_apply():

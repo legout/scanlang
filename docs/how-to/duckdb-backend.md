@@ -113,7 +113,7 @@ duckdb_hits = apply_sql(con, scan_def, relation="bars").select("symbol", "sessio
 For sma-only scans on complete frames, the hit sets are identical
 (native window lowering is exact on both engines). For ema/rsi/atr
 scans, values agree to <0.01 at mature bars (after ~4n); hit sets can
-still differ in the warm-up window. See [indicators reference](indicators.md)
+still differ in the warm-up window. See [indicators reference](../reference/indicators.md)
 for the warm-up contract.
 
 ## When to pick which

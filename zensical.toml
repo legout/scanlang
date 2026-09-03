@@ -23,6 +23,7 @@ nav = [
     { "Eager vs lazy frames" = "how-to/eager-frames.md" },
     { "score_bars + stats" = "how-to/score-bars-stats.md" },
     { "Scan from text" = "how-to/scan-from-text.md" },
+    { "duckdb backend" = "how-to/duckdb-backend.md" },
   ] },
   { "Explanation" = [
     { "IR design" = "explanation/ir-design.md" },
@@ -40,6 +41,7 @@ nav = [
     { "Notebooks" = "reference/notebooks.md" },
     { "IR freeze" = "reference/ir-freeze.md" },
     { "Research: duckdb" = "reference/research-duckdb.md" },
+    { "duckdb backend" = "reference/duckdb-backend.md" },
   ] },
 ]
 

@@ -87,14 +87,14 @@ changed the math:
 - The hand-rolled CTE cost the old verdict warned about (ema, rsi, atr)
   no longer applies. The extension exposes `t_*` scalar functions that
   take a list and return a list, in one O(N) pass per symbol.
-- The benchmark report
-  ([`research/talib_benchmark_2026-09-02.md`](https://github.com/legout/marketdata-screens/blob/master/research/talib_benchmark_2026-09-02.md),
-  marketdata-screens repo) measured the indicator creation cost on the
-  full 25.7M-row lake universe. The `t_*` scalar form is the fastest
-  engine measured: **3.8 s vs 6.0 s for polars native**, vs 4.6 s for
-  polars + py-talib. Cross-engine value parity is high where both
-  engines emit: RSI agrees to <0.5 points everywhere measured, and the
-  Minervini Trend Template scanner matched exactly (493 = 493 hits).
+- The benchmark report (`research/talib_benchmark_2026-09-02.md` in the
+  sibling `marketdata-screens` repo — internal, not published) measured
+  the indicator creation cost on the full 25.7M-row lake universe. The
+  `t_*` scalar form is the fastest engine measured: **3.8 s vs 6.0 s for
+  polars native**, vs 4.6 s for polars + py-talib. Cross-engine value
+  parity is high where both engines emit: RSI agrees to <0.5 points
+  everywhere measured, and the Minervini Trend Template scanner matched
+  exactly (493 = 493 hits).
 - `scanlang` 0.3.0 adds the `duckdb_sql` module: a second backend that
   compiles the same scan-def IR to parameterized SQL, lowers indicators
   in two tiers (native window for sma/rmin/rmax/shift, `t_*` scalar for

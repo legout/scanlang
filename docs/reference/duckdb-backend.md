@@ -108,12 +108,18 @@ keyword:
 | `"polars"` (default) | Every name in `INDICATORS`; rejects talib-only names with `indicator '<name>' requires engine='duckdb'` |
 | `"duckdb"` | Every name in `SQL_INDICATORS` (a strict superset of `INDICATORS`); accepts the talib-only names |
 
-The polars engine never executes the talib-only names — `compile`
-raises the same `ValueError` `validate` would. The duckdb engine
-executes only what `SQL_INDICATORS` knows about. `compile`, `apply`, and
-`apply_sql` all accept the same `engine=` kwarg for consistency; the
-`engine` does not change which plan they emit, only which names
-validate.
+The polars engine never executes the talib-only names — they are
+duckdb-only by construction (no entry in `INDICATORS`). `compile` and
+`apply` still emit polars plans only: when `engine="duckdb"` widens
+name validation to include a talib-only name, the `INDICATORS`
+lowering path has no builder for it and raises `KeyError: '<name>'`
+at `compiler._operand` (`INDICATORS[spec["fn"]]` lookup) — no
+`ValueError`, no plan. The duckdb-only names (`macd`, `bbands_*`,
+`adx`, `aroon`, `cdlengulfing`, `ht_trendline`) must therefore route
+through `compile_sql` / `apply_sql` — the SQL backend is the only path
+that can plan and execute them. `compile`, `apply`, and `apply_sql`
+all accept the same `engine=` kwarg for consistency; the engine only
+widens the name allowlist, it does not retarget polars to emit SQL.
 
 ## `SQL_INDICATORS` registry shape
 

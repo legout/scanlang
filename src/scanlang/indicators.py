@@ -11,6 +11,12 @@ Each entry:
 Extend by inserting entries; this shape is the contract. A future
 ``scanlang.talib`` module (pyproject ``talib`` extra) populates the same dict for
 exact-value parity on collected results — it cannot participate in lazy pushdown.
+
+Seeding note (``ema``/``rsi``/``atr``): TA-Lib seeds its recursions with an SMA
+of the first ``n`` values; polars ``ewm_mean(adjust=False)`` seeds from the
+first value. The recursions match, so values converge after warm-up
+(typically ~3-4x the period) but diverge in the early window — accepted by
+design, see the 2026-09-02 duckdb-backend plan (Q1).
 """
 
 from __future__ import annotations
@@ -24,9 +30,9 @@ __all__ = ["INDICATORS"]
 
 def _rsi(e: pl.Expr, n: int, partition: str) -> pl.Expr:
     delta = e.diff().over(partition)
-    gain = delta.clip(lower_bound=0).rolling_mean(n).over(partition)
-    loss = (-delta.clip(upper_bound=0)).rolling_mean(n).over(partition)
-    return (100 - 100 / (1 + gain / loss)).fill_null(50.0)
+    gain = delta.clip(lower_bound=0).ewm_mean(alpha=1 / n, adjust=False).over(partition)
+    loss = (-delta.clip(upper_bound=0)).ewm_mean(alpha=1 / n, adjust=False).over(partition)
+    return 100 - 100 / (1 + gain / loss)
 
 
 def _atr(n: int, partition: str) -> pl.Expr:
@@ -36,7 +42,7 @@ def _atr(n: int, partition: str) -> pl.Expr:
         (pl.col("high") - pc).abs(),
         (pc - pl.col("low")).abs(),
     )
-    return tr.rolling_mean(n).over(partition)
+    return tr.ewm_mean(alpha=1 / n, adjust=False).over(partition)
 
 
 # name -> (arg_spec, builder, required_cols)

@@ -75,19 +75,57 @@ INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]]
 The registry is a public module-level dict; consumers extend by insertion.
 The entry shape is the contract — see [Extend INDICATORS](../how-to/extend-indicators.md).
 
-v1 indicators: `sma, ema, rsi, atr, rmin, rmax, shift`. A future
-`scanlang.talib` optional module (matches the pyproject `talib` extra)
-populates the same dict for exact-value parity on collected results —
-it cannot participate in lazy pushdown.
+### TA-Lib alignment note
+
+`scanlang` 0.3.0 aligns the polars `INDICATORS` builders to TA-Lib
+recursion so cross-engine values converge:
+
+- `ema` already uses the same recursion as TA-Lib (`k = 2 / (n + 1)`);
+  only the seed differs.
+- `rsi` and `atr` moved from simple rolling means (Cutler) to Wilder
+  smoothing (`ewm_mean(alpha = 1/n, adjust=False)`), matching TA-Lib.
+
+TA-Lib seeds EMA/RSI/ATR with an SMA of the first `n` values; polars
+`ewm_mean(adjust=False)` seeds from the first value. Exact match is
+not expr-expressible, so the contract is: values converge after warm-up
+(typically ~4×n bars; the benchmark measures full agreement within 0.01
+by ~7.6n), early-window divergence is documented. Warm-up rows are
+excluded from scan hits by the count-guard or by polars' own null
+propagation, so mature-bar scans see consistent values across engines.
+
+Marketdata-screens `score_bars` values (RSI thresholds 70/85,
+`atr_ratio`) shift slightly as a consequence; near-threshold scores
+can flip. Called out in the 0.3.0 release notes.
+
+### Indicators and engines
+
+`INDICATORS` is the polars registry and stays polars-only. The duckdb
+backend has its own [`SQL_INDICATORS`](../reference/duckdb-backend.md)
+that is a strict superset: the entries shared between the two have
+identical `arg_spec` and `required_cols`, and the duckdb-only names
+(`macd`, `bbands_upper`, `bbands_lower`, `adx`, `aroon`, `cdlengulfing`,
+`ht_trendline`) exist only on the duckdb side. They are the talib
+extension's signature functions; polars has no native expression for
+them. [`validate(scan_def, *, engine=...)`](../reference/api.md)
+accepts the `engine` kwarg to gate which names pass. The full table:
+[Indicators reference](../reference/indicators.md).
 
 ## compile / validate / apply
 
 | Function | Purpose |
 | --- | --- |
-| `compile(scan_def, *, catalog=PROPERTY_CATALOG, partition="symbol")` | scan def -> one polars predicate |
+| `compile(scan_def, *, catalog=PROPERTY_CATALOG, partition="symbol", engine="polars")` | scan def -> one polars predicate |
 | `validate(scan_def, *, catalog=...)` | `list[str]` of errors; empty = valid |
-| `apply(frame, scan_def, *, catalog=..., partition=...)` | filter + order_by + limit (eager or lazy) |
+| `apply(frame, scan_def, *, catalog=..., partition=..., engine=...)` | filter + order_by + limit (eager or lazy) |
 | `catalog_from_schema(frame)` | polars schema -> catalog dict |
+
+The `engine=` kwarg is additive on `validate`, `compile`, and `apply`
+(default `"polars"`). It selects which indicator registry validates
+`{"fn": ...}` names — `"polars"` uses `INDICATORS`, `"duckdb"` uses
+the strict superset in `SQL_INDICATORS`. It does not change which
+plan `compile` emits; the polars path always emits `pl.Expr`. For the
+duckdb backend, use [`scanlang.duckdb_sql.compile_sql`](../reference/duckdb-backend.md)
+and `apply_sql` to get parameterized SQL.
 
 Caller contract: the frame is sorted `(partition, time)` ascending.
 Nonstandard column names are renamed at the caller's edge
@@ -140,4 +178,5 @@ Full rules: [Scan from text](../how-to/scan-from-text.md).
 - [Validation split](validation-split.md) — total vs structural
 - [Null semantics](null-semantics.md) — polars null semantics on
   filters
-- [Why no duckdb](why-no-duckdb.md) — the backend question we closed
+- [Why no duckdb](why-no-duckdb.md) — the verdict the SQL backend
+  supersedes

@@ -1,6 +1,7 @@
 """Freeze-contract checks: groups, operand exprs, indicators, lazy scoring, stats."""
 
 import datetime as dt
+from itertools import pairwise
 
 import polars as pl
 import pytest
@@ -15,6 +16,7 @@ from scanlang import (
     score_bars,
     validate,
 )
+from scanlang.indicators import INDICATORS
 
 T0 = dt.date(2026, 1, 1)
 
@@ -95,7 +97,7 @@ def test_custom_partition_and_rsi():
     ]}
     assert validate(d, catalog=catalog_from_schema(bars)) == []
     out = apply(bars.lazy(), d, catalog=catalog_from_schema(bars), partition="sym").collect()
-    assert len(out) == 120  # rsi fill_null(50) keeps every bar non-null
+    assert len(out) == 118  # 2 warm-up nulls per symbol (rsi undefined before n diffs)
 
 
 def test_list_value_ops_compile_and_apply():
@@ -211,3 +213,47 @@ def test_stats():
     assert summary["included"] == 1 and summary["total"] == 1
     label, hit, avg, n = summary["horizons"][0]
     assert (label, n, hit) == ("5d", 1, 100.0) and avg == pytest.approx(5.0)
+
+
+def test_wilder_indicators_converge_to_talib_recursion():
+    """rsi/ema/atr use the TA-Lib Wilder recursion: converged values match a
+    pure-python reference (SMA seed) to <0.01; early bars may differ (seed)."""
+    n, bars = 14, 300
+    x = 42
+    closes = []
+    for _ in range(bars):
+        x = (x * 1103515245 + 12345) % 2**31
+        closes.append(100 + (x % 1000) / 100.0)
+    highs = [c + 0.5 for c in closes]
+    lows = [c - 0.5 for c in closes]
+    df = pl.DataFrame({"symbol": ["A"] * bars, "high": highs, "low": lows, "close": closes})
+
+    out = df.with_columns(
+        rsi=INDICATORS["rsi"][1](pl.col("close"), n, "symbol"),
+        ema=INDICATORS["ema"][1](pl.col("close"), n, "symbol"),
+        atr=INDICATORS["atr"][1](n, "symbol"),
+    ).row(-1, named=True)
+
+    # pure-python TA-Lib-style reference: seed with SMA of first n, then Wilder
+    gains = [max(b - a, 0.0) for a, b in pairwise(closes)]
+    losses = [max(a - b, 0.0) for a, b in pairwise(closes)]
+    ag, al = sum(gains[:n]) / n, sum(losses[:n]) / n
+    for g, l in zip(gains[n:], losses[n:]):
+        ag, al = (ag * (n - 1) + g) / n, (al * (n - 1) + l) / n
+    rsi_ref = 100 - 100 / (1 + ag / al)
+
+    k = 2 / (n + 1)
+    ema_ref = sum(closes[:n]) / n
+    for c in closes[n:]:
+        ema_ref = c * k + ema_ref * (1 - k)
+
+    trs = [highs[0] - lows[0]] + [
+        max(h - l, abs(h - pc), abs(pc - l)) for h, l, pc in zip(highs[1:], lows[1:], closes[:-1])
+    ]
+    atr_ref = sum(trs[:n]) / n
+    for tr in trs[n:]:
+        atr_ref = (atr_ref * (n - 1) + tr) / n
+
+    assert out["rsi"] == pytest.approx(rsi_ref, abs=0.01)
+    assert out["ema"] == pytest.approx(ema_ref, abs=0.01)
+    assert out["atr"] == pytest.approx(atr_ref, abs=0.01)

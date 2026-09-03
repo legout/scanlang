@@ -103,6 +103,11 @@ def test_cross_literal_operand_matches_constant_lag():
     out = apply(bars, up, catalog=catalog_from_schema(bars)).collect()
     assert out["symbol"].to_list() == ["AAA"]
     assert out["session"].to_list() == [T0 + dt.timedelta(days=2)]
+    # constant-folding arithmetic dict folds to a literal — no lag either
+    fold = {"filters": [{"property": "close", "op": "cross_above", "value": {"+": [10.5, 0.5]}}]}
+    out = apply(bars, fold, catalog=catalog_from_schema(bars)).collect()
+    assert out["symbol"].to_list() == ["AAA"]
+    assert out["session"].to_list() == [T0 + dt.timedelta(days=2)]
     # an uptrend never crosses below a constant, so descend via negated close:
     # -10, -11, ... crosses below -10.5 at bar 1
     down = {"filters": [

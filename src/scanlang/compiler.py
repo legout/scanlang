@@ -331,10 +331,11 @@ def _compile_leaf(f, *, catalog: dict, partition: str) -> pl.Expr:
         )
     if op in _CROSS:
         rhs = _operand(f["value"], catalog=catalog, partition=partition)
-        # a literal has no previous bar — shifting it nulls every row and
-        # silently drops all hits; only column-bearing operands lag
-        prev_lhs = lhs.shift(1).over(partition)
-        prev_rhs = rhs.shift(1).over(partition) if isinstance(value, dict) else rhs
+        # a constant has no previous bar — shifting it nulls every row and
+        # silently drops all hits; only column-bearing operands lag. Covers
+        # literals AND constant-folding arithmetic ({"+": [10.5, 0.5]}).
+        prev_lhs = lhs.shift(1).over(partition) if lhs.meta.root_names() else lhs
+        prev_rhs = rhs.shift(1).over(partition) if rhs.meta.root_names() else rhs
         return (lhs > rhs) & (prev_lhs <= prev_rhs) if op == "cross_above" else (lhs < rhs) & (prev_lhs >= prev_rhs)
     if op in _LIST_OPS:
         # in/between/contains values are validated literal-only: raw scalars,

@@ -255,6 +255,8 @@ def test_cross_with_literal_operand(con):
     d = {"filters": [{"property": "close", "op": "cross_above", "value": 11.0}]}
     golden = [("AAA", T0 + dt.timedelta(days=21))]  # close[20]=11.0 <= 11.0 < close[21]=11.05
     assert _pl_hits(df, d) == golden == _sql_hits(con, d)
+    d = {"filters": [{"property": "close", "op": "cross_above", "value": {"+": [5.0, 6.0]}}]}
+    assert _pl_hits(df, d) == golden == _sql_hits(con, d)  # folds to the literal 11.0
     d = {"filters": [{"property": "close", "op": "cross_above",
                       "value": {"fn": "sma", "args": [{"col": "close"}, 30]}}]}
     hits = _sql_hits(con, d)

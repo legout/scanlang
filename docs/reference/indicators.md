@@ -30,7 +30,7 @@ which is a strict superset of `INDICATORS`.
 | `bbands_upper`, `bbands_lower` | — | yes | talib `t_bbands` (two entries; middle band is `sma`) |
 | `adx` | — | yes | talib `t_adx` |
 | `aroon` | — | yes | talib `t_aroon` (the up line) |
-| `cdlengulfing` | — | yes | talib `t_cdlengulfing` (0/100 talib integer) |
+| `cdlengulfing` | — | yes | talib `t_cdlengulfing` (0/100 talib integer, match detected) |
 | `ht_trendline` | — | yes | talib `t_ht_trendline` |
 
 The polars builders for `ema`, `rsi`, and `atr` use the same recursion

@@ -431,3 +431,25 @@ def test_bbands_brackets_close_sql(con):
                                        {"property": {"fn": "bbands_lower", "args": [20]}, "op": ">=", "value": -1e9}]},
                      relation="bars", catalog=cat)
     assert all(u > l for u, l in zip(vals["c0"], vals["c1"], strict=True) if u is not None)
+
+
+def test_talib_only_builders_execute(con):
+    """Execution smoke for adx/aroon/cdlengulfing/ht_trendline: exact talib warm-up counts + value domains.
+
+    Warm-ups (null bars per symbol) are the talib semantics: adx(14)=27 (2*14-1),
+    aroon(14)=14, cdlengulfing=2 (2-bar pattern), ht_trendline=63 (dominant cycle);
+    verified against live duckdb+talib.
+    """
+    df = _bars()
+    cat = catalog_from_schema(df)
+    cases = {
+        "adx": (14, 27, lambda v: v > 0),
+        "aroon": (14, 14, lambda v: 0 <= v <= 100),
+        "cdlengulfing": (2, 2, lambda v: v in (0, 1)),
+        "ht_trendline": (2, 63, lambda v: v is not None),
+    }
+    for fn, (n, warmup, domain) in cases.items():
+        d = {"filters": [{"property": {"fn": fn, "args": [n]}, "op": ">=", "value": -1e9}]}
+        assert len(_sql_hits(con, d, catalog=cat)) == 3 * (N - warmup), fn
+        for (v,) in _sql_hits(con, d, cols=("c0",), catalog=cat):
+            assert domain(v), (fn, v)

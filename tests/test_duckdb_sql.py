@@ -453,3 +453,10 @@ def test_talib_only_builders_execute(con):
         assert len(_sql_hits(con, d, catalog=cat)) == 3 * (N - warmup), fn
         for (v,) in _sql_hits(con, d, cols=("c0",), catalog=cat):
             assert domain(v), (fn, v)
+
+    # Pin aroon's struct narrowing: scanlang "aroon" is the UP line (down differs per-row).
+    # CCC (sawtooth) first non-null values descend 13/14, 12/14, 11/14 * 100; aroon_down
+    # would start 57.14/50/42.86 there instead, and AAA (uptrend) is constant 100 either way.
+    d = {"filters": [{"property": {"fn": "aroon", "args": [14]}, "op": ">=", "value": -1e9}]}
+    ccc = [v for s, _, v in _sql_hits(con, d, cols=("symbol", "session", "c0"), catalog=cat) if s == "CCC"]
+    assert ccc[:3] == pytest.approx([1300 / 14, 1200 / 14, 1100 / 14])

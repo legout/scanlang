@@ -67,9 +67,10 @@ def _sql_hits(con, d: dict, cols: tuple[str, ...] = ("symbol", "session"), **kw)
 
 
 def _pl_hits(df: pl.DataFrame, d: dict, cols: tuple[str, ...] = ("symbol", "session"), **kw) -> list[tuple]:
+    cat = kw.pop("catalog", None)
     return [
         tuple(r)
-        for r in apply(df, d, catalog=catalog_from_schema(df), **kw)
+        for r in apply(df, d, catalog=cat or catalog_from_schema(df), **kw)
         .select(cols)
         .sort(cols)
         .rows()
@@ -221,8 +222,8 @@ def test_error_cases_identical(con):
     with pytest.raises(ValueError, match="unknown property"):
         compile_sql(bad_prop, relation="bars")
 
-    bad_fn = {"filters": [{"property": {"fn": "adx", "args": [{"col": "close"}, 14]}, "op": ">", "value": 0}]}
-    assert validate(bad_fn) == ["filters[0].property.fn: unknown indicator: 'adx'"]
+    bad_fn = {"filters": [{"property": {"fn": "nosuchfn", "args": [{"col": "close"}, 14]}, "op": ">", "value": 0}]}
+    assert validate(bad_fn) == ["filters[0].property.fn: unknown indicator: 'nosuchfn'"]
     with pytest.raises(ValueError, match="unknown indicator"):
         compile_sql(bad_fn, relation="bars")
 
@@ -231,14 +232,18 @@ def test_error_cases_identical(con):
             compile_sql({"filters": []}, relation=rel)
 
 
-def test_sql_registry_mirrors_indicators():
+def test_sql_registry_superset_of_indicators():
+    """Every INDICATORS name mirrors 1:1; talib-only names live SQL-side only."""
     from scanlang.indicators import INDICATORS
 
-    for name, (arg_spec, _b, req) in SQL_INDICATORS.items():
-        assert name in INDICATORS
-        assert INDICATORS[name][0] == arg_spec
-        assert INDICATORS[name][2] == req
-    assert set(SQL_INDICATORS) == set(INDICATORS)
+    for name, (arg_spec, _b, req) in INDICATORS.items():
+        assert name in SQL_INDICATORS
+        assert SQL_INDICATORS[name][0] == arg_spec
+        assert SQL_INDICATORS[name][2] == req
+    assert set(SQL_INDICATORS) > set(INDICATORS)
+    assert set(SQL_INDICATORS) - set(INDICATORS) == {
+        "macd", "bbands_upper", "bbands_lower", "adx", "aroon", "cdlengulfing", "ht_trendline",
+    }
 
 
 # --- review round 1 regressions (card comment repros A-J) -------------------
@@ -358,3 +363,71 @@ def test_order_by_unreferenced_column(con):
     pol2 = apply(df, d2, catalog=catalog_from_schema(df))
     sql2 = apply_sql(con, d2, relation="bars", catalog=catalog_from_schema(df))
     assert pol2.select("symbol", "session").rows() == sql2.select("symbol", "session").rows()
+
+
+# --- C3: corpus indicators both engines, talib-only SQL-side -----------------
+
+
+def test_corpus_indicators_match_benchmark(con):
+    """adr/roc/natr/slope SQL output == benchmark talib values at mature bars."""
+    df = _bars()
+    cat = catalog_from_schema(df)
+    d = {"filters": [{"property": {"fn": name, "args": [{"col": "close"}, n]},
+                     "op": ">=", "value": -1000}
+        for name, n in (("adr", 14), ("roc", 60), ("natr", 14), ("slope", 10))]}
+    sql = apply_sql(con, d, relation="bars", catalog=cat)
+    # benchmark: polars builders (talib-seeded, C1-verified) on the same frame
+    ref = df.with_columns(
+        INDICATORS["adr"][1](pl.col("close"), 14, "symbol").alias("adr"),
+        INDICATORS["roc"][1](pl.col("close"), 60, "symbol").alias("roc"),
+        INDICATORS["natr"][1](pl.col("close"), 14, "symbol").alias("natr"),
+        INDICATORS["slope"][1](pl.col("close"), 10, "symbol").alias("slope"),
+    )
+    idx = {(s, sess): i for i, (s, sess) in enumerate(zip(ref["symbol"], ref["session"], strict=True))}
+    for j, name in enumerate(("adr", "roc", "natr", "slope")):
+        got = dict(zip(zip(sql["symbol"], sql["session"], strict=True), sql[f"c{j}"], strict=True))
+        for (sym, sess), v in got.items():
+            if (sess - T0).days < 150:  # well past every lookback incl. adr(14) warm-up
+                continue
+            w = ref[name][idx[(sym, sess)]]
+            assert v is not None and w is not None, (name, sym, sess)
+            assert abs(v - w) < 0.01, (name, sym, sess, v, w)
+
+
+def test_adr_roc_hits_equal_both_engines(con):
+    """sma-family adr is exact-tier: full-frame hit sets identical (corpus scans)."""
+    df = _bars()
+    cat = catalog_from_schema(df)
+    d = {"filters": [
+        {"property": {"fn": "adr", "args": [{"col": "close"}, 20]}, "op": ">", "value": 3},
+        {"property": {"fn": "roc", "args": [{"col": "close"}, 60]}, "op": ">", "value": 5},
+    ]}
+    assert _sql_hits(con, d, catalog=cat) == _pl_hits(df, d, catalog=cat)
+
+
+def test_sql_only_names_run_on_duckdb(con):
+    """macd executes; polars engine refuses the same def."""
+    df = _bars()
+    cat = catalog_from_schema(df)
+    d = {"filters": [{"property": {"fn": "macd", "args": [12]}, "op": ">=", "value": -1000}]}
+    hits = _sql_hits(con, d, catalog=cat)
+    assert len(hits) == 3 * (N - 33)  # macd(12,26,9): first 33 bars NULL per symbol
+    assert "requires engine='duckdb'" in validate(d, catalog=cat)[0]
+    assert validate(d, catalog=cat, engine="duckdb") == []
+
+
+def test_bbands_brackets_close_sql(con):
+    """bbands_lower < close < bbands_upper holds somewhere mature (duckdb only)."""
+    df = _bars()
+    cat = catalog_from_schema(df)
+    d = {"filters": [{"property": "session", "op": ">=", "value": str(T0 + dt.timedelta(days=60))},
+                     {"property": {"fn": "bbands_lower", "args": [20]}, "op": "<", "value": {"col": "close"}},
+                     {"property": {"fn": "bbands_upper", "args": [20]}, "op": ">", "value": {"col": "close"}}]}
+    hits = _sql_hits(con, d, catalog=cat)
+    assert hits  # BBB's +/-8 oscillation crosses both bands
+    assert "requires engine='duckdb'" in validate(d, catalog=cat)[0]
+    # upper > lower everywhere mature (bands never invert on this frame)
+    vals = apply_sql(con, {"filters": [{"property": {"fn": "bbands_upper", "args": [20]}, "op": ">=", "value": -1e9},
+                                       {"property": {"fn": "bbands_lower", "args": [20]}, "op": ">=", "value": -1e9}]},
+                     relation="bars", catalog=cat)
+    assert all(u > l for u, l in zip(vals["c0"], vals["c1"], strict=True) if u is not None)

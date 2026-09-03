@@ -12,20 +12,32 @@ identifier (``[A-Za-z_][A-Za-z0-9_]*``, never a path/URL — register a view
 first).
 
 Indicator lowering, two tiers ([`SQL_INDICATORS`](#scanlang.duckdb_sql.SQL_INDICATORS)
-mirrors the ``INDICATORS`` entry contract; ``INDICATORS`` stays polars-only):
+mirrors the ``INDICATORS`` entry contract and is a superset of it; ``INDICATORS``
+stays polars-only):
 
-- ``sma/rmin/rmax/shift`` -> native window functions over
+- ``sma/rmin/rmax/shift/adr`` -> native window functions over
   ``(partition, order_column)``, with a ``count``-guard ``CASE`` so warm-up
-  rows are NULL exactly like polars ``rolling_*``.
-- ``ema/rsi/atr`` -> community talib ``t_*`` scalar form: per-partition list
-  CTE, ``t_fn`` over the lists, unnest back (the benchmark's fastest form;
-  ``ta_*`` window functions are 30-35x slower and are not used). ``t_*``
-  front-pads its result to input length, so unnest against the session list
-  is row-aligned. Warm-up rows come back NULL until the lookback fills —
-  unlike the polars engine's ``ema`` (``ewm_mean(adjust=False)``), which
-  emits from bar 0, so pre-lookback rows diverge for ``ema`` by design
-  (the accepted warm-up contract, Q1 of the 2026-09-02 plan; hit-set
-  equality is therefore only claimed for sma-family scans).
+  rows are NULL exactly like polars ``rolling_*``. ``adr`` = sma of
+  TR/close*100 — a two-step window (TR materialized in a subquery, then
+  averaged), exact on both engines.
+- ``ema/rsi/atr/roc/natr/slope`` -> community talib ``t_*`` scalar form:
+  per-partition list CTE, ``t_fn`` over the lists, unnest back (the
+  benchmark's fastest form; ``ta_*`` window functions are 30-35x slower and
+  are not used). ``t_*`` front-pads its result to input length, so unnest
+  against the session list is row-aligned. Warm-up rows come back NULL until
+  the lookback fills — unlike the polars engine's ``ema``
+  (``ewm_mean(adjust=False)``), which emits from bar 0, so pre-lookback rows
+  diverge for ``ema`` by design (the accepted warm-up contract, Q1 of the
+  2026-09-02 plan; hit-set equality is therefore only claimed for
+  sma-family scans).
+- duckdb-only (talib extension, no polars builder):
+  ``macd`` (the MACD line), ``bbands_upper``/``bbands_lower`` (two entries —
+  bands are scanned as thresholds; the middle band is just ``sma``),
+  ``adx``, ``aroon`` (the up line), ``cdlengulfing`` (0/1 talib integer),
+  ``ht_trendline``. Multi-output ``t_*`` functions return lists of structs;
+  the builders narrow them to one struct field in SQL.
+  [`validate(..., engine="duckdb")`](api.md#scanlang.compiler.validate)
+  accepts these names — the polars engine rejects them.
 
 Nested computed operands (``sma(rsi(close, 14), 5)``) stage as successive
 row-aligned CTEs — one column per indicator call. The probe answer
@@ -63,7 +75,7 @@ _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _CMP = {">=": ">=", "<=": "<=", ">": ">", "<": "<", "==": "=", "!=": "<>"}
 _ARITH_KEYS = ("+", "-", "*", "/")
 _SQL_TYPES = {"str": "VARCHAR", "int": "BIGINT", "float": "DOUBLE", "bool": "BOOLEAN", "date": "DATE"}
-_WINDOW = frozenset(("sma", "rmin", "rmax", "shift"))  # rest -> t_* scalar tier
+_WINDOW = frozenset(("sma", "rmin", "rmax", "shift", "adr"))  # rest -> t_* scalar tier
 
 
 def _q(name: str) -> str:
@@ -115,8 +127,130 @@ def _tatr(x, n: int, p: str, o: str, params: list) -> str:
     return f"t_atr({', '.join(cols)}, CAST(? AS INTEGER))"
 
 
+def _tcol(x, n, p: str, o: str, params: list, cols: tuple[str, ...]) -> str:
+    """t_* over the given base columns (no period when ``n`` is None)."""
+    if n is not None:
+        params.append(n)
+        tail = ", CAST(? AS INTEGER)"
+    else:
+        tail = ""
+    return f"{x}({', '.join(f'list({_q(c)} ORDER BY {_q(o)})' for c in cols)}{tail})"
+
+
+def _roc(x, n: int, p: str, o: str, params: list) -> str:
+    params.append(n)
+    return f"t_roc(list({x} ORDER BY {_q(o)}), CAST(? AS INTEGER))"
+
+
+def _slope_sql(x, n: int, p: str, o: str, params: list) -> str:
+    params.append(n)
+    return f"t_linearreg_slope(list({x} ORDER BY {_q(o)}), CAST(? AS INTEGER))"
+
+
+def _natr(x, n: int, p: str, o: str, params: list) -> str:
+    # talib NATR normalizes by close; the leading expr is grammar-uniform.
+    params.append(n)
+    cols = ", ".join(f"list({_q(c)} ORDER BY {_q(o)})" for c in ("high", "low", "close"))
+    return f"t_natr({cols}, CAST(? AS INTEGER))"
+
+
+def _macd(x, n, p: str, o: str, params: list) -> str:
+    # n = fast period (slow/signal stay at talib defaults 26/9); the scan-level
+    # name is the MACD line = struct field 'macd'. fn() wraps t_* output in
+    # unnest; a LIST(STRUCT) cannot be field-narrowed directly, so the raw
+    # list is aliased inner (_rawN) and narrowed outer (see _emit_t).
+    params.extend((n, 26, 9))
+    return (
+        "{'macd': unnest(t_macd(list("
+        f"{_q('close')} ORDER BY {_q(o)}), "
+        "CAST(? AS INTEGER), CAST(? AS INTEGER), CAST(? AS INTEGER)))['macd']}"
+    )
+
+
+def _bband(side: str):
+    def build(x, n, p: str, o: str, params: list) -> str:
+        params.extend((n, 2.0, 2.0, 0))
+        return (
+            f"{{'{side}': unnest(t_bbands(list({_q('close')} ORDER BY {_q(o)}), "
+            "CAST(? AS INTEGER), CAST(? AS DOUBLE), CAST(? AS DOUBLE), CAST(? AS INTEGER)))"
+            f"['{side}']}}"
+        )
+
+    return build
+
+
+def _aroon(x, n: int, p: str, o: str, params: list) -> str:
+    params.append(n)
+    cols = (f"list({_q(c)} ORDER BY {_q(o)})" for c in ("high", "low"))
+    return (
+        "{'aroon_up': unnest(t_aroon("
+        f"{', '.join(cols)}, CAST(? AS INTEGER)))['aroon_up']}}"
+    )
+
+
+def _raw_tfn(list_frag: str) -> str:
+    """Raw ``t_*`` call inside a ``{'field': ...}`` list_frag (for the inner alias)."""
+    i = list_frag.index("unnest(") + len("unnest(")
+    j = list_frag.rindex(")['")  # closes unnest before the field bracket
+    return list_frag[i:j]
+
+
+def _raw_field(list_frag: str) -> str:
+    """The ``['field']`` tail of a ``{'field': unnest(...)['field']}`` list_frag."""
+    i = list_frag.rindex(")") + 1  # right after the unnest close-paren
+    j = list_frag.rindex("']}")
+    return list_frag[i : j + 2]
+
+
+def _adx(x, n: int, p: str, o: str, params: list) -> str:
+    return _tcol("t_adx", n, p, o, params, ("high", "low", "close"))
+
+
+def _cdlengulfing(x, n, p: str, o: str, params: list) -> str:
+    return _tcol("t_cdlengulfing", None, p, o, params, ("open", "high", "low", "close"))
+
+
+def _ht_trendline(x, n, p: str, o: str, params: list) -> str:
+    return _tcol("t_ht_trendline", None, p, o, params, ("close",))
+
+
+def _adr(x, n: int, p: str, o: str, params: list) -> str:
+    """ADR = sma(TR/close*100), two-step native window (exact cross-engine).
+
+    The leading expr is accepted for close-default grammar uniformity; the
+    measure itself is always TR over close (like talib NATR normalizes by
+    close). Window functions cannot nest, so TR (needs lag(close)) is emitted
+    as its own stage: ``fn()`` detects ``name == "adr"`` and emits an extra
+    window CTE before averaging. Bar 0's lag is null -> TR null; the
+    count-guard skips the first n-1 rows exactly like polars rolling_mean
+    warm-up, and by row n-1 bar 0 has left every window, so the null never
+    reaches a live value. avg/count skip nulls identically on both engines.
+    """
+    frame = f"PARTITION BY {_q(p)} ORDER BY {_q(o)} ROWS BETWEEN ? PRECEDING AND CURRENT ROW"
+    params += [n - 1, n, n - 1]  # frame appears twice: count-guard + avg
+    return f"CASE WHEN count(_tr) OVER ({frame}) = ? THEN avg(_tr / {_q('close')} * 100.0) OVER ({frame}) END"
+
+
+def _adr_tr(p: str, o: str, params: list) -> str:
+    """Stage 1 of adr: raw true range per row (null pc at bar 0 propagates)."""
+    pc = f"lag({_q('close')}, 1) OVER (PARTITION BY {_q(p)} ORDER BY {_q(o)})"
+    return (
+        f"greatest({_q('high')} - {_q('low')}, "
+        f"abs({_q('high')} - {pc}), abs({pc} - {_q('low')}))"
+    )
+
+
 # name -> (arg_spec, sql_builder, required_cols) — mirrors INDICATORS' contract.
 # The entry shape is the extension point for the SQL engine.
+#
+# duckdb-only entries (macd, bbands, adx, aroon, cdlengulfing, ht_trendline)
+# have no polars builder: validate(engine="duckdb") accepts them, the polars
+# engine rejects them. Multi-output t_* functions are narrowed to one series
+# at the SQL level: macd -> the MACD line (fast EMA - slow EMA, the
+# conventional "MACD" value; signal/hist are derived from it), bbands ->
+# upper AND lower as two entries (bands are scanned as thresholds; no single
+# "primary" band), aroon -> aroon_up (the trend-strength signal; aroon_down
+# is its mirror for short setups, add as its own entry if ever needed).
 SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "sma": (("expr", "int"), lambda x, n, p, o, pa: _win(x, n, p, o, pa, "AVG"), ()),
     "rmin": (("expr", "int"), lambda x, n, p, o, pa: _win(x, n, p, o, pa, "MIN"), ()),
@@ -125,6 +259,18 @@ SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "ema": (("expr", "int"), lambda x, n, p, o, pa: _tcall("t_ema", x, n, o, pa), ()),
     "rsi": (("expr", "int"), lambda x, n, p, o, pa: _tcall("t_rsi", x, n, o, pa), ()),
     "atr": (("int",), _tatr, ("high", "low", "close")),
+    "adr": (("expr", "int"), _adr, ("high", "low", "close")),
+    "roc": (("expr", "int"), _roc, ()),
+    "natr": (("expr", "int"), _natr, ("high", "low", "close")),
+    "slope": (("expr", "int"), _slope_sql, ()),
+    # duckdb-only (talib extension): not in INDICATORS
+    "macd": (("int",), _macd, ("close",)),
+    "bbands_upper": (("int",), _bband("upper"), ("close",)),
+    "bbands_lower": (("int",), _bband("lower"), ("close",)),
+    "adx": (("int",), _adx, ("high", "low", "close")),
+    "aroon": (("int",), _aroon, ("high", "low")),
+    "cdlengulfing": (("int",), _cdlengulfing, ("open", "high", "low", "close")),
+    "ht_trendline": (("int",), _ht_trendline, ("close",)),
 }
 
 """SQL indicator registry: the ``{"fn": name}`` lowering table for this module.
@@ -132,7 +278,17 @@ SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
 Same entry shape as ``scanlang.indicators.INDICATORS`` (arg_spec, builder,
 required_cols), but builders emit SQL fragments instead of ``pl.Expr`` and
 take ``(x, n, partition, order_column, params)``. Extend by insertion —
-``SQL_INDICATORS["roc"] = (("expr", "int"), builder, ())``.
+``SQL_INDICATORS["roc"] = (("int",), builder, ())``.
+
+This registry is a superset of ``INDICATORS``: the talib-only names
+``macd``, ``bbands_upper``, ``bbands_lower``, ``adx``, ``aroon``,
+``cdlengulfing``, and ``ht_trendline`` exist here and nowhere in
+``INDICATORS`` — they run only on the duckdb engine (the community talib
+extension provides the ``t_*`` functions).
+[``validate(..., engine="duckdb")``](api.md#scanlang.compiler.validate)
+accepts them; the polars engine rejects them with
+``indicator 'adx' requires engine='duckdb'``. All other names mirror an
+``INDICATORS`` entry 1:1 (same arg_spec, same required_cols).
 """
 
 
@@ -186,6 +342,38 @@ class _Gen:
 
         self.pending.append(emit)
 
+    def _emit_adr(self, expr: str, alias: str) -> None:
+        """adr's two window stages: TR materialization, then the guarded average.
+
+        Stage A projects only (partition, order, _tr) — the lag inside TR needs
+        every row of ``prev``, but the count-guard avg must not see lag rows
+        shift the window (ROWS framing over the same row set is what aligns it
+        with polars rolling_mean). Stage B is a normal window CTE: SELECT *
+        carries ``close`` (the avg needs it) and every earlier column/alias
+        forward. Params for TR render first (stage A precedes stage B in the
+        final WITH), so the builder's params append in text order.
+        """
+
+        def emit() -> None:
+            # both stages append synchronously: calling _emit_w here would
+            # append to self.pending mid-flush, pushing the window CTE behind
+            # later t-tier CTEs (which don't carry _tr -> binder error).
+            # Stage numbers come from self.stage AT FLUSH TIME (walk time is 0).
+            self.stage += 1
+            # builder already appended this stage's params (walk time) — the
+            # TR text renders through the same sink so ?-counts stay aligned.
+            self.ctes.append(
+                f"s{self.stage} AS (SELECT *, {_adr_tr(self.p, self.o, self.params)} AS _tr "
+                f"FROM {self.prev})"
+            )
+            self.prev = f"s{self.stage}"
+            self.stage += 1
+            self.ctes.append(f"s{self.stage} AS (SELECT *, {expr} FROM {self.prev})")
+            self.prev = f"s{self.stage}"
+            self.computed.append(alias)
+
+        self.pending.append(emit)
+
     def _emit_t(self, list_frag: str, unnest_frag: str, alias: str) -> None:
         """t_*-tier CTE: per-partition lists, t_fn over them, unnest back.
 
@@ -193,20 +381,37 @@ class _Gen:
         so sibling filters compiled after this fn still find their columns
         and every earlier alias here.
         """
+        frag: list[str | None] = [list_frag]
+
         def emit() -> None:
+            list_frag = frag[0]
             bases = sorted(self.cols - {self.p, self.o})
             inner = [f"list({_q(c)} ORDER BY {_q(self.o)}) AS _b{i}" for i, c in enumerate(bases)]
             outer = [f"unnest(_b{i}) AS {_q(c)}" for i, c in enumerate(bases)]
             for i, a in enumerate(self.computed):
                 inner.append(f"list({_q(a)} ORDER BY {_q(self.o)}) AS _c{i}")
                 outer.append(f"unnest(_c{i}) AS {_q(a)}")
+            # A struct literal as ``list_frag`` (`{'macd': unnest(...)['macd']}`,
+            # multi-output narrowing) makes duckdb drop every sibling SELECT
+            # item of the projection it appears in — including other fns'
+            # ``_v{n}`` aliases. So the raw t_* LIST is aliased in the inner
+            # SELECT under ``_rawN`` and the narrowing moves to the outer
+            # SELECT as ``unnest(_rawN)['field']``; the usual
+            # ``_v{n}``/``unnest(_v{n})`` pair is skipped entirely.
+            if list_frag.lstrip().startswith("{"):
+                raw = f"_raw{self.n}"
+                inner.append(f"{_raw_tfn(list_frag)} AS {raw}")
+                outer.append(f"unnest({raw}){_raw_field(list_frag)} AS {alias}")
+                list_frag = None
             self.stage += 1
             name = f"s{self.stage}"
+            frags = inner + ([list_frag] if list_frag else [])
+            outs = outer + ([unnest_frag] if list_frag else [])
             self.ctes.append(
-                f"{name} AS (SELECT {_q(self.p)}, unnest(_o) AS {_q(self.o)}, {', '.join(outer + [unnest_frag])} "
+                f"{name} AS (SELECT {_q(self.p)}, unnest(_o) AS {_q(self.o)}, {', '.join(outs)} "
                 f"FROM (SELECT {_q(self.p)}, "
                 f"list({_q(self.o)} ORDER BY {_q(self.o)}) AS _o, "
-                f"{', '.join(inner + [list_frag])} "
+                f"{', '.join(frags)} "
                 f"FROM {self.prev} GROUP BY {_q(self.p)}))"
             )
             self.prev = name
@@ -271,9 +476,19 @@ class _Gen:
         finally:
             self.sink = outer_sink
         if name in _WINDOW:
-            self._emit_w(f"{expr} AS {alias}", alias)
+            if name == "adr":
+                # adr's TR needs lag(close) — window functions cannot nest, so
+                # it materializes as its own CTE before the guarded average.
+                self._emit_adr(f"{expr} AS {alias}", alias)
+            else:
+                self._emit_w(f"{expr} AS {alias}", alias)
         else:
             self._emit_t(f"{expr} AS _v{self.n}", f"unnest(_v{self.n}) AS {alias}", alias)
+            # duckdb quirk (probed): a struct literal in the inner projection
+            # (`{'macd': ...}` multi-output narrowing) makes it drop every
+            # sibling item, including other fns' `_v{n}` aliases. The emit
+            # above splits the struct case out (raw alias inner, unnest+narrow
+            # outer) so `_v{n}` is never referenced in the outer SELECT.
         self.n += 1
         return alias
 
@@ -348,6 +563,7 @@ def compile_sql(
     catalog: dict = PROPERTY_CATALOG,
     partition: str = "symbol",
     order_column: str = "session",
+    engine: str = "duckdb",
 ) -> tuple[str, list]:
     """Compile a scan definition into parameterized duckdb SQL.
 
@@ -366,6 +582,10 @@ def compile_sql(
         catalog: Property -> ``{"label", "dtype"}`` mapping.
         partition: Column name for window ops (per-symbol semantics).
         order_column: Column name defining bar order within a partition.
+        engine: Which indicator registry validates ``{"fn": ...}`` names;
+            ``"duckdb"`` (default) is the only engine that can execute the
+            generated SQL — the kwarg exists for API consistency with
+            ``validate`` and ``compile``.
 
     Returns:
         ``(sql, params)`` — run with ``con.execute(sql, params)``.
@@ -374,7 +594,7 @@ def compile_sql(
         ValueError: on validation failure (same first-error message as
             ``compile()``) or a non-identifier ``relation``.
     """
-    errors = _collect(scan_def, catalog=catalog)
+    errors = _collect(scan_def, catalog=catalog, engine=engine)
     if errors:
         raise ValueError(errors[0])
     if not isinstance(relation, str) or not _IDENT.fullmatch(relation):
@@ -414,11 +634,12 @@ def apply_sql(
 ) -> pl.DataFrame:
     """Run a scan definition on a duckdb connection; returns an eager frame.
 
-    Ensures the community talib extension on the connection (``INSTALL talib
-    FROM community; LOAD talib`` — idempotent, cached after the first call),
-    executes the compiled SQL, and collects eagerly (duckdb has no
-    polars-lazy plan). ``duckdb`` itself is never imported here — pass a
-    connection, so scanlang without the ``duckdb`` extra still imports.
+    Validates with ``engine="duckdb"`` (so talib-only indicator names are
+    accepted), ensures the community talib extension on the connection
+    (``INSTALL talib FROM community; LOAD talib`` — idempotent, cached after
+    the first call), executes the compiled SQL, and collects eagerly (duckdb
+    has no polars-lazy plan). ``duckdb`` itself is never imported here — pass
+    a connection, so scanlang without the ``duckdb`` extra still imports.
 
     Args:
         con: An open ``duckdb`` connection with ``relation`` attached.

@@ -73,10 +73,11 @@ z_hits = apply(lf, z_score, catalog=catalog, partition="ticker").collect()
 print("z-score rows per ticker:", z_hits.group_by("ticker").agg(pl.len()).sort("ticker").to_dicts())
 
 if __name__ == "__main__":
-    # rsi fill_null(50): uptrend AAA clears 70 from bar 15 on (46 rows);
-    # downtrend BBB has rsi 0 — it never appears (group_by drops empty groups)
+    # rsi fill_null(50): Wilder smoothing (0.3.0) — monotonic uptrend stays
+    # >= 70 after warm-up (59 of 60 rows); downtrend BBB has rsi 0 — it never
+    # appears (group_by drops empty groups)
     by_ticker = dict(hot.group_by("ticker").agg(pl.len()).iter_rows())
-    assert by_ticker == {"AAA": 46}
+    assert by_ticker == {"AAA": 59}
     # registry insertion is additive and usable immediately
     assert "stdev" in INDICATORS
     assert z_hits.height > 0

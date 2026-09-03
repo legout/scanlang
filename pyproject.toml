@@ -1,6 +1,6 @@
 [project]
 name = "scanlang"
-version = "0.2.0"
+version = "0.3.0"
 description = "Screener DSL and scan compiler: signal definitions -> validated polars pushdown filters."
 readme = "README.md"
 license = "MIT"

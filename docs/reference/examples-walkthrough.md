@@ -169,8 +169,8 @@ rsi_hot = {"filters": [{
 hot = apply(lf, rsi_hot, catalog=catalog, partition="ticker").collect()
 ```
 
-Output — the uptrend clears RSI 70 from bar 15 on (46 rows); the downtrend's
-RSI is pinned at 0:
+Output — with Wilder smoothing (0.3.0) the monotonic uptrend stays over RSI 70
+after warm-up (59 of 60 rows); the downtrend's RSI is pinned at 0:
 
 ```
 shape: (1, 2)
@@ -179,7 +179,7 @@ shape: (1, 2)
 │ ---    ┆ --- │
 │ str    ┆ u32 │
 ╞════════╪═════╡
-│ AAA    ┆ 46  │
+│ AAA    ┆ 59  │
 └────────┴─────┘
 ```
 

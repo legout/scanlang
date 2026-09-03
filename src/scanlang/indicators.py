@@ -51,6 +51,32 @@ def _atr(n: int, partition: str) -> pl.Expr:
     return tr.ewm_mean(alpha=1 / n, adjust=False).over(partition)
 
 
+def _tr(n: int, partition: str) -> pl.Expr:
+    """Raw true range (null pc at bar 0 propagates — same TR the atr builder smooths)."""
+    pc = pl.col("close").shift(1).over(partition)
+    return pl.max_horizontal(
+        pl.col("high") - pl.col("low"),
+        (pl.col("high") - pc).abs(),
+        (pc - pl.col("low")).abs(),
+    )
+
+
+def _slope(e, n: int, partition: str) -> pl.Expr:
+    """Rolling OLS slope of ``e`` against its window position (0..n-1).
+
+    Closed form via rolling sums (no rolling_corr in polars): with x the
+    window position and y the value, slope = (Σxy − x̄·Σy) / Σ(x−x̄)². Σxy uses
+    the row index offset trick: Σ(k·yₖ) over the window ending at the current
+    row = Σ(row·y) − (row − (n−1))·Σ(y).
+    """
+    s_y = e.rolling_sum(n).over(partition)
+    s_xy = (pl.int_range(0, pl.len()).cast(pl.Float64) * e).rolling_sum(n).over(partition) - (
+        pl.int_range(0, pl.len()).cast(pl.Float64) - (n - 1)
+    ).over(partition) * s_y
+    s_xx = n * (n * n - 1) / 12
+    return (s_xy - (n - 1) / 2 * s_y) / s_xx
+
+
 # name -> (arg_spec, builder, required_cols)
 #
 # Extend by inserting entries; the entry shape is the contract. See
@@ -68,6 +94,28 @@ INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     ),
     "rsi": (("expr", "int"), _rsi, ()),
     "atr": (("int",), _atr, ("high", "low", "close")),
+    "adr": (
+        ("expr", "int"),
+        lambda e, n, partition: (_tr(n, partition) / pl.col("close") * 100)
+        .rolling_mean(n)
+        .over(partition),
+        ("high", "low", "close"),
+    ),
+    "roc": (
+        ("expr", "int"),
+        lambda e, n, partition: (e / e.shift(n).over(partition) - 1) * 100,
+        (),
+    ),
+    "natr": (
+        ("expr", "int"),
+        lambda e, n, partition: (_atr(n, partition) / pl.col("close") * 100).over(partition),
+        ("high", "low", "close"),
+    ),
+    "slope": (
+        ("expr", "int"),
+        _slope,
+        (),
+    ),
     "rmin": (
         ("expr", "int"),
         lambda e, n, partition: e.rolling_min(n).over(partition),
@@ -103,4 +151,10 @@ Registry mutation is the extension point:
 ``INDICATORS["stdev"] = (("expr", "int"), builder, ())`` — register
 idempotently (guard with ``if "stdev" not in INDICATORS``) at import
 time. See [Extend INDICATORS](../how-to/extend-indicators.md).
+
+Multi-output talib indicators are NOT entries here — the polars engine has
+no native expression for them. ``macd``, ``bbands``, ``aroon``,
+``cdlengulfing``, and ``ht_trendline`` live only in
+``scanlang.duckdb_sql.SQL_INDICATORS`` (duckdb engine, talib extension);
+``scanlang.compiler.validate(scan_def, engine="duckdb")`` accepts them.
 """

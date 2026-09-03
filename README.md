@@ -12,7 +12,7 @@ that `scanlang` compiles into one validated polars predicate. Nothing is
 string-interpolated, so there is no injection surface. Filters run on eager
 `DataFrame` or lazy `LazyFrame`; window semantics are computed per partition.
 
-Status: **v0.2, pre-alpha**. The IR is frozen (additive changes only). For the
+Status: **v0.3, pre-alpha**. The IR is frozen (additive changes only). For the
 design rationale, see [docs/explanation/ir-design.md](docs/explanation/ir-design.md).
 
 ## Install

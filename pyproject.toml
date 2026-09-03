@@ -27,6 +27,9 @@ Issues = "https://github.com/legout/scanlang/issues"
 
 [project.optional-dependencies]
 talib = ["ta-lib>=0.7.1"]
+duckdb = [
+    "duckdb>=1.5",
+]
 
 [dependency-groups]
 dev = ["pytest>=8.0.0", "ruff>=0.8.0"]

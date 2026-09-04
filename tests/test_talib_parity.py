@@ -213,6 +213,87 @@ def test_cci_cross_engine_hit_set_equality(con):
     assert pol.equals(sql.sort("symbol", "session"))
 
 
+def _degenerate_bars() -> pl.DataFrame:
+    """Two 60-bar symbols for the 0/0 twins: VAR has ONE zero-range bar.
+
+    VAR: varied OHLCV except bar 30 where high==low==close (illiquid
+    single-print) — pre-guard, that NaN poisoned ad's cum_sum for the rest
+    of the partition. HALT: one identical print repeated — cci's window MAD
+    is 0, pre-guard every mature NaN passed `> 100`.
+    """
+    n = 60
+    sessions = [T0 + dt.timedelta(days=i) for i in range(n)]
+    closes = [100.0 - 0.4 * i + 3.0 * ((i * 7) % 11) for i in range(n)]
+    high = [c + 0.8 + 0.1 * (i % 3) if i != 30 else c for i, c in enumerate(closes)]
+    low = [c - 0.8 - 0.1 * ((i + 1) % 3) if i != 30 else c for i, c in enumerate(closes)]
+    var = pl.DataFrame(
+        {
+            "symbol": ["VAR"] * n,
+            "session": sessions,
+            "open": [c - 0.1 for c in closes],
+            "high": high,
+            "low": low,
+            "close": closes,
+            "volume": [500.0 + 10.0 * (i % 4) for i in range(n)],
+        }
+    )
+    halt = pl.DataFrame(
+        {
+            "symbol": ["HALT"] * n,
+            "session": sessions,
+            "open": [42.0] * n,
+            "high": [42.0] * n,
+            "low": [42.0] * n,
+            "close": [42.0] * n,
+            "volume": [250.0] * n,
+        }
+    )
+    return pl.concat([var, halt])
+
+
+@pytest.fixture(scope="module")
+def con_deg():
+    path = "/tmp/scanlang_degenerate_bars.parquet"
+    _degenerate_bars().write_parquet(path)
+    con = duckdb.connect()
+    con.execute(f"CREATE VIEW deg AS SELECT * FROM '{path}'")
+    yield con
+    con.close()
+
+
+def test_zero_range_and_flat_window_cross_engine(con_deg):
+    """0/0 twins of the cci cross-engine test: builders match talib AND duckdb.
+
+    ad on VAR: the zero-range bar must contribute 0.0 (talib semantics), not
+    NaN-poison cum_sum. cci on HALT: flat window (MAD==0) must emit 0.0 at
+    mature bars with the warm-up nulls intact. Both engines must return
+    identical hit sets for discriminating filters (pre-guard: polars NaN
+    passed `>`, duckdb didn't — 30 vs 0 ad hits, 47 vs 0 cci hits).
+    """
+    df = _degenerate_bars()
+    cat = catalog_from_schema(df)
+    for fn, args, value in (("ad", [], 0.0), ("cci", [14], 100.0)):
+        d = {"filters": [{"property": {"fn": fn, "args": args}, "op": ">", "value": value}]}
+        assert validate(d, catalog=cat, engine="duckdb") == []
+        pol = apply(df, d, catalog=cat).select("symbol", "session")
+        sql = apply_sql(con_deg, d, relation="deg", catalog=cat).select("symbol", "session")
+        assert pol.equals(sql.sort("symbol", "session")), fn
+
+    var = df.filter(pl.col("symbol") == "VAR").sort("session")
+    ref = talib.AD(var["high"].to_numpy(), var["low"].to_numpy(), var["close"].to_numpy(), var["volume"].to_numpy())
+    _args, builder, _req = INDICATORS["ad"]
+    ours = var.select(builder(partition="symbol").alias("v"))["v"]
+    assert all(ours[i] == pytest.approx(ref[i], abs=1e-9) for i in range(var.height))
+
+    halt = df.filter(pl.col("symbol") == "HALT").sort("session")
+    ref = talib.CCI(halt["high"].to_numpy(), halt["low"].to_numpy(), halt["close"].to_numpy(), timeperiod=14)
+    _args, builder, _req = INDICATORS["cci"]
+    ours = halt.select(builder(14, partition="symbol").alias("v"))
+    assert ours["v"].null_count() == 13  # warm-up mask survives the guard chain
+    assert (ours["v"].slice(13) == 0.0).all()
+    assert (ref[13:] == 0.0).all()  # talib agrees — flat window pins 0.0
+
+
 def test_stoch_k_d_struct_narrowing_and_warmup(con):
     """stoch_k/stoch_d: 3-int signature executes; struct narrowing + warm-up pinned.
 

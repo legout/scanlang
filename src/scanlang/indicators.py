@@ -179,7 +179,17 @@ def _cci(n: int, partition: str) -> pl.Expr:
     # talib CCI denominator is the window MEAN ABSOLUTE DEVIATION, not std
     # (rolling_map: no native rolling-MAD expr; probed == talib.CCI <= 3.5e-12)
     mad = tp.rolling_map(lambda s: (s - s.mean()).abs().mean(), window_size=n).over(partition)
-    return (tp - tp.rolling_mean(n).over(partition)) / (0.015 * mad)
+    # talib guards the 0/0 flat-window case to 0.0 (and duckdb t_cci does too);
+    # NaN would pass polars `>` filters (same trap _rsi guards). Null cond
+    # (rolling_map warm-up) must be checked FIRST or it takes the otherwise
+    # branch and warm-up would emit 0.0 instead of the pinned null mask.
+    return (
+        pl.when(mad.is_null())
+        .then(None)
+        .when(mad == 0)
+        .then(0.0)
+        .otherwise((tp - tp.rolling_mean(n).over(partition)) / (0.015 * mad))
+    )
 
 
 def _willr(n: int, partition: str) -> pl.Expr:
@@ -200,9 +210,13 @@ def _trange(n: int, partition: str) -> pl.Expr:
 def _ad(_n=None, partition: str = "symbol") -> pl.Expr:
     # `_n` is always None: ad is the one periodless entry (empty arg_spec),
     # but the builder keeps a (n, partition)-compatible call shape
-    clv = ((pl.col("close") - pl.col("low")) - (pl.col("high") - pl.col("close"))) / (
-        pl.col("high") - pl.col("low")
-    )
+    # talib contributes 0.0 on zero-range bars (high==low); the raw 0/0 NaN
+    # would poison cum_sum for the rest of the partition (NaN passes polars
+    # `>` filters — same trap _rsi guards)
+    clv = pl.when(pl.col("high") != pl.col("low")).then(
+        ((pl.col("close") - pl.col("low")) - (pl.col("high") - pl.col("close")))
+        / (pl.col("high") - pl.col("low"))
+    ).otherwise(0.0)
     return (clv * pl.col("volume")).cum_sum().over(partition)
 
 

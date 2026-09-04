@@ -25,25 +25,43 @@ time via `duckdb_functions()`), and the current `INDICATORS` /
    - Already pinned in `pyproject.toml:29` (`[talib] ta-lib>=0.7.1`); the
      0.4.0 plan adds no new required dependency for parity — only the
      optional `talib` and `duckdb` extras.
-2. **`scanlang.talib` adapter seam: `pl.map_groups(...).over(partition).fill_nan(None)`.**
+2. **`scanlang.talib` adapter seam: `group_by(partition, maintain_order=True).map_groups(...)`.**
    - Verified against official TA-Lib 0.7.1 on a 3-symbol × 300-bar
      deterministic frame (`tests/test_duckdb_sql.py:30–51`): the
      `_bars()` fixture's OHLCV matches TA-Lib (C extension, no Python-side
      rounding) within 1e-6 on every warm-up-emitted bar for `EMA`, `RSI`,
      `ATR`, `NATR`, `LINEARREG_SLOPE`, `ROC`, `AROON`, `HT_TRENDLINE`,
-     `CDLENGULFING`. The seam is:
-     `df.group_by(partition).map_groups(lambda g: pl.from_numpy(talib.<FN>(*arrays, timeperiod=n)).fill_nan(None)).over(partition)`
-     — `.over(partition)` is required for lazy pushdown on the scan-side,
-     `.fill_nan(None)` matches the duckdb `t_*` warm-up contract (TA-Lib
-     seeds as NaN for the first `unstable_period` rows; the duckdb `t_*`
-     tier already proves this returns null on the wire).
-   - On lazy frames, the seam becomes
-     `pl.col(group_cols).map_batches(...)` chained at collect time; the
-     registry insertion contract stays `.over(partition)` because the
-     caller's frame is already sorted `(partition, time)`.
-   - The seam runs only on `apply(..., engine="talib")` — the polars-native
-     hot path is untouched (a registered talib adapter would never appear
-     in a lazy plan if the caller picks `engine="polars"`).
+     `CDLENGULFING`. The seam (live-probed on polars 1.44.1) is:
+     ```python
+     df.group_by(partition, maintain_order=True).map_groups(
+         lambda g: g.with_columns(
+             pl.Series(name="<out>",
+                       values=talib.<FN>(*arrays, timeperiod=n))
+                       .fill_nan(None)))
+     ```
+     — `maintain_order=True` is required so the per-group result rows
+     align with the input ordering; `.fill_nan(None)` matches the duckdb
+     `t_*` warm-up contract (TA-Lib seeds the first `unstable_period`
+     rows with NaN; the duckdb `t_*` tier already proves this returns
+     null on the wire — `t_ema` warm-up probed at 13 nulls, then exact
+     match against `talib.EMA` on every subsequent bar).
+   - **Why not `pl.Expr.map_groups` / `...over(partition)`:**
+     `polars.Expr` has no `map_groups` (AttributeError on 1.44.1 — the
+     method lives on `GroupBy` / `DataFrame.group_by` only), and the
+     `DataFrame` returned by `map_groups` has no `.over(...)` method.
+     The original draft of this plan used that broken form; the
+     executable form above is what the implementer MUST use.
+   - **Lazy frame note.** `LazyGroupBy.map_groups` requires a `schema`
+     kwarg (signature: `map_groups(function, schema)`) which would force
+     the adapter to declare every output dtype up front. The current
+     seam is eager-only: `apply(..., engine="talib")` collects the
+     frame first. This is consistent with the IR freeze — the polars
+     hot path (engine="polars") stays lazy; only the optional talib
+     engine pays the eager-collect cost.
+   - The seam runs only on `apply(..., engine="talib")` — the
+     polars-native hot path is untouched (a registered talib adapter
+     never appears in a lazy plan if the caller picks
+     `engine="polars"`).
 
 ## Inventory — current state (live probed, 2026-09-04)
 
@@ -108,8 +126,9 @@ TA-Lib missing from duckdb t_* (35, full set): ACCBANDS, ADD, ADOSC,
   APO, AROONOSC, AVGDEV, BETA, CORREL, DIV, IMI, MA, MACDEXT, MACDFIX,
   MAVP, MFI, MINMAXINDEX, MULT, OBV, PPO, SAR, SAREXT, STDDEV, STOCHF,
   STOCHRSI, SUB, T3, ULTOSC, VAR, plus the 7 CDL functions listed above.
-  (Note: `ta_*` window form is also exposed — 129 functions — but the
-  2026-09-02 plan §S1 rejected it: 30–35× slower than `t_*`.)
+  (Note: `ta_*` window form is also exposed — 126 TA-Lib twins + 3
+  duckdb-only (`tan`, `tanh`, `table_info`) = 129 functions total —
+  but the 2026-09-02 plan §S1 rejected it: 30–35× slower than `t_*`.)
 ```
 
 The **missing-from-duckdb set is the cross-engine exclusion list** —
@@ -120,12 +139,12 @@ these are not in scope for 0.4.0. See "Excluded functions" below.
 Source: `src/scanlang/indicators.py:130` (polars-native) and
 `src/scanlang/duckdb_sql.py:302` (duckdb SQL).
 
-- `INDICATORS` (polars, 14 entries): `sma`, `ema`, `rsi`, `atr`, `adr`,
+- `INDICATORS` (polars, 13 entries): `sma`, `ema`, `rsi`, `atr`, `adr`,
   `roc`, `natr`, `slope`, `rmin`, `rmax`, `shift`, `rs_ratio`,
   `rs_momentum`. Argument signatures are all `("expr", "int")` or
   `("int",)`. Required columns: `("high", "low", "close")` for `atr`,
   `adr`, `natr`; empty for the rest.
-- `SQL_INDICATORS` (duckdb, 19 entries): the 14 above plus
+- `SQL_INDICATORS` (duckdb, 20 entries): the 13 above plus
   `macd`, `bbands_upper`, `bbands_lower`, `adx`, `aroon`, `cdlengulfing`,
   `ht_trendline` (talib-only — engine="duckdb" required for validate and
   compile). Argument signatures are the same `("expr", "int")` / `("int",)`
@@ -146,9 +165,16 @@ Multi-output lowering (live, in `duckdb_sql.py:158–215`):
 - `t_stoch` → struct fields `'slowk'` / `'slowd'` (would split into
   `stoch_k(n)` / `stoch_d(n)` if added; not in scope — `STOCHF` is
   missing from `t_*`).
-- `t_mama` → struct fields `'mama'` / `'fama'`. MAMA itself is missing
-  from `t_*` — duckdb has the function but the `t_*` variant does not
-  exist (verified via `duckdb_functions()`).
+- `t_mama` → struct fields `'mama'` / `'fama'`. MAMA itself has a
+  `t_mama` form (verified live via `duckdb_functions()`) but is excluded
+  in 0.4.0 because MAMA's parameters are floats (`fastlimit=0.5`,
+  `slowlimit=0.05`) which the frozen `arg_spec` cannot express.
+- `t_midpoint` → scalar (single output). Present in `t_*`; excluded
+  in 0.4.0 as "no current corpus scan" — would slot in as
+  `midpoint(close, n)` (`("int",)`, `close` required) if a future
+  corpus card asks for it.
+- `t_ht_trendmode` → scalar INTEGER. Present in `t_*`; excluded for
+  the same corpus-not-needed reason.
 - `t_ht_phasor` → `'inphase'` / `'quadrature'`. `t_ht_sine` →
   `'sine'` / `'leadsine'`. `t_minmax` → `'min'` / `'max'`.
 
@@ -226,7 +252,7 @@ containment; adx/aroon/cdlengulfing/ht_trendline warm-up + value domain;
 aroon_up first 3 CCC values pinned to `1300/14, 1200/14, 1100/14`).
 All values verified against live TA-Lib 0.7.1 in this card.
 
-### Net new for 0.4.0 — eleven polars-native + two SQL-only
+### Net new for 0.4.0 — thirteen new scanlang names (eleven polars-native + two SQL-only)
 
 Targeted additions are functions whose value is not already expressible
 in polars-native or where the corpus scan explicitly needs them.
@@ -240,8 +266,9 @@ in polars-native or where the corpus scan explicitly needs them.
 | `kama`        | `KAMA` | `t_kama` | `("expr", "int")` | — | null first n | both |
 | `midprice`    | `MIDPRICE` | `t_midprice` | `("int",)` | `high,low` | null first n−1 | both |
 | `mom`         | `MOM`  | `t_mom` | `("expr", "int")` | — | null first n | both |
-| `stoch_k`     | `STOCH` | `t_stoch` | `("int", "int", "int")` | `high,low,close` | null first fastk−1 (slowk) | duckdb-only |
-| `stoch_d`     | `STOCH` | `t_stoch` | `("int", "int", "int")` | `high,low,close` | null first fastk−1 (slowd) | duckdb-only |
+| `stoch_k`     | `STOCH` | `t_stoch` | `("int", "int", "int")` | `high,low,close` | null first (fastk−1)+(slowk−1)+(slowd−1) | duckdb-only |
+| `stoch_d`     | `STOCH` | `t_stoch` | `("int", "int", "int")` | `high,low,close` | null first (fastk−1)+(slowk−1)+(slowd−1) | duckdb-only |
+(stoch_k/stoch_d example warm-ups: 5/3/3 → 8, 14/3/3 → 17, 14/5/5 → 21; verified live on N=100 probe frame.)
 | `cci`         | `CCI`  | `t_cci` | `("int",)` | `high,low,close` | null first n−1 | both |
 | `mfi`         | `MFI`  | — (missing) | n/a | n/a | n/a | **EXCLUDED** |
 | `obv`         | `OBV`  | — (missing) | n/a | n/a | n/a | **EXCLUDED** |
@@ -258,6 +285,17 @@ adapters, no new compiler branches. The `("int", "int", "int")` shape
 for `stoch_k`/`stoch_d` (fast-k, slow-k, slow-d periods) is the first
 three-int shape; validate() handles it because the loop is `for tag, a
 in zip(arg_spec, args)` — length is the only constraint.
+
+**Dummy-int precedent (TRANGE / HT_TRENDLINE).** `trange` and
+`ht_trendline` both take no TA-Lib period argument (`t_trange(h, l, c)`,
+`t_ht_trendline(c)`); but scanlang's IR convention is for every
+non-AD entry to declare its period in `arg_spec`. We therefore spec
+both as `("int",)` with the builder passing `None` (via the existing
+`_tcol(..., None, ...)` helper at `duckdb_sql.py:131` for the
+duckdb tier and the corresponding `_bars._pl_native_<FN>` polars
+helper). The user-facing `n` value is silently ignored at SQL build
+time. This is the same precedent `ht_trendline` already used in 0.3.0
+(`docs/plans/...indicator catalog`); `trange` extends it.
 
 ### Why these 13+2 and not more
 
@@ -282,12 +320,19 @@ uniformly:
   warrants.
 - **TA-Lib has them, `t_*` does not, but polars-native can**: NOTHING
   current fits this. APO, PPO, ULTOSC, ADXR, CMO, TRIX, DX, ADOSC, IMI,
-  MAMA, BOP, AVGDEV, STDDEV, VAR, BETA, CORREL, LINEARREG/_ANGLE/
+  BOP, AVGDEV, STDDEV, VAR, BETA, CORREL, LINEARREG/_ANGLE/
   _INTERCEPT, TSF, MACDEXT, MACDFIX, MA, MAVP, SAR, SAREXT, T3,
-  ACCBANDS, AROONOSC, MIDPOINT — ALL **EXCLUDED** in 0.4.0 because they
-  lack `t_*` form. (Many ARE polars-expressible; if/when they ship, they
+  ACCBANDS, AROONOSC — ALL **EXCLUDED** in 0.4.0 because they
+  lack `t_*` form (Many ARE polars-expressible; if/when they ship, they
   ship in a separate plan that re-evaluates the value-add in a polars-only
   universe.)
+- **TA-Lib has them, `t_*` has them, but excluded for other reasons**:
+  - `MAMA` — `t_mama` exists but MAMA's parameters are floats
+    (`fastlimit=0.5`, `slowlimit=0.05`) which the frozen `arg_spec`
+    cannot express. Defer until the float-tag IR addition.
+  - `MIDPOINT`, `HT_TRENDMODE` — both have `t_*` forms; excluded for
+    the same "no current corpus scan" reason as the multi-output
+    Cycle-Indicator set (see exclusion table below).
 
 ### Excluded functions (the cross-engine exclusion list)
 
@@ -295,7 +340,7 @@ Recorded in the plan and the registry docstrings; NOT in scope for 0.4.0.
 
 | Category | Functions | Reason |
 |----------|-----------|--------|
-| Missing from `t_*` (no duckdb form) | `ACCBANDS, APO, AROONOSC, ADOSC, AVGDEV, BETA, CORREL, DIV, IMI, MA, MACDEXT, MACDFIX, MAVP, MFI, MULT, OBV, PPO, SAR, SAREXT, STDDEV, STOCHF, STOCHRSI, SUB, T3, ULTOSC, VAR, ADD, MINMAXINDEX, HT_TRENDMODE, MIDPOINT, MAMA` | No `t_*` form exists; `ta_*` window form rejected by benchmark (30–35× slower). Some ARE polars-native (e.g. `STDDEV` → `rolling_std`); polars-only entry would need a separate plan. |
+| Missing from `t_*` (no duckdb form) | `ACCBANDS, APO, AROONOSC, ADOSC, AVGDEV, BETA, CORREL, DIV, IMI, MA, MACDEXT, MACDFIX, MAVP, MFI, MULT, OBV, PPO, SAR, SAREXT, STDDEV, STOCHF, STOCHRSI, SUB, T3, ULTOSC, VAR, ADD, MINMAXINDEX` | No `t_*` form exists; `ta_*` window form rejected by benchmark (30–35× slower). Some ARE polars-native (e.g. `STDDEV` → `rolling_std`); polars-only entry would need a separate plan. (28-element list; combined with the 7 missing CDL functions it equals the 35-func gap to 161 TA-Lib funcs.) |
 | Generic vector math | `ADD, DIV, MAX, MAXINDEX, MIN, MININDEX, MINMAX, MINMAXINDEX, MULT, SUB, SUM` (Math Operators) | Re-implements polars expressions. The IR `+ - * /` and `pl.lit` already cover these. |
 | Generic vector math | `ACOS, ASIN, ATAN, CEIL, COS, COSH, EXP, FLOOR, LN, LOG10, SIN, SINH, SQRT, TAN, TANH` (Math Transform) | Same: re-implements polars expressions. |
 | Requires non-int params (no IR support) | `MAMA` (float limits), `SAR` (float accel/max), `SAREXT` (8 floats), `MA` (MA type enum), `MACDEXT` (MA types), `MACDFIX` (signal — int, but differs), `MAVP` (variable period array) | The IR freeze's `arg_spec` is `"expr" | "int"` only; supporting floats/enums requires an additive IR tag (`"float"` or `"enum"`) which this plan explicitly defers. Recorded in the registry docstring. |
@@ -368,9 +413,16 @@ how-to. The rules are:
 ## Acceptance tests (per category slice)
 
 Every entry below is a `pytest` test that the implementer must add.
-Total: 14 new tests + 4 modified existing tests (no test deleted).
-All run on the existing `tests/test_duckdb_sql.py:54–62` `con` fixture
-and the `_bars()` deterministic frame (300 bars, 3 symbols, OHLCV).
+**Total: 6 new tests** (Slices B, C, D, E, F, G — one per slice;
+no test deleted; no existing test modified). All run on the existing
+`tests/test_duckdb_sql.py:54–62` `con` fixture and the `_bars()`
+deterministic frame (300 bars, 3 symbols, OHLCV).
+
+The previous draft of this plan claimed "14 new tests + 4 modified" —
+that count was a planning artifact, not a specification. The actual
+contract is the six test functions named below (one per slice); each
+slices-loops over its target entries inside the function body so one
+test function covers all entries in that slice.
 
 ### Slice A: sma-family — no new tests (already exact on both engines)
 Pin: `test_duckdb_sql.py::test_sma_family_identical` (line 80).
@@ -429,7 +481,10 @@ def test_mixed_required_cols_value_parity(con):
     high,low for midprice; high,low,close,volume for ad). Single test
     covers all five.
     """
-    # trange(close, 14) — close lag = warm-up 14
+    # trange(high, low, close) — TRANGE = max(H−L, |H−Cprev|, |L−Cprev|);
+    # warm-up 1 (bar 0 has no `Cprev`); the user-facing n is ignored
+    # (TRANGE takes no period — see edge case 6 and the spec note on
+    # `trange`'s dummy-int arg in the codification rules).
     # midprice(14) — high,low required; warm-up 14
     # ad() — high,low,close,volume; no warm-up
     # cci(14) — typical; warm-up 14
@@ -540,13 +595,17 @@ must respect
    only claimed for sma-family scans. Cross-engine convergence is
    documented at 0.01 abs diff after MATURE bars (verified at 112 for
    n=14; 7.6 × 14 ≈ 106, with margin).
-6. **`ad` is the first `("int",)`-empty arg_spec entry.**
-   `ht_trendline` already uses `("int",)` with no empty variant; `ad`
-   takes no `n` arg, so its `arg_spec` is the empty tuple `()`.
-   `_tcol` (`duckdb_sql.py:131`) already handles `n is None` — the
-   builder passes `None` for the period. `validate()` already handles
-   empty `arg_spec` (`compiler.py:171` checks `len(args) != len(arg_spec)`,
-   which is `0 != 0`).
+6. **`ad` is the first empty-tuple `()` `arg_spec` entry.** `ad`
+   takes no `n` arg, so its `arg_spec` is the empty tuple `()`. (This
+   is distinct from the dummy-int precedent: see the codification
+   rules "Dummy-int precedent" paragraph above — `trange` and
+   `ht_trendline` take no period but their `arg_spec` is still
+   `("int",)` to match scanlang's "every non-AD entry declares its
+   period" convention. `ad` is the outlier: no period at all, so
+   empty tuple.) `_tcol` (`duckdb_sql.py:131`) already handles
+   `n is None` for the dummy-int case. `validate()` already handles
+   empty `arg_spec` (`compiler.py:171` checks
+   `len(args) != len(arg_spec)`, which is `0 != 0`).
 7. **`stoch_k`, `stoch_d` are the first 3-int `arg_spec` entries.**
    Validate's tag loop (`compiler.py:175–178`) is length-only — the
    `("int", "int", "int")` shape Just Works. The SQL builder must
@@ -606,10 +665,30 @@ the contract)
 
 - 2026-09-04 — initial plan. Probed live: TA-Lib 0.7.1 (161 indicator
   funcs, 10 groups), duckdb 1.5.5 community talib extension (126 `t_*`
-  funcs exact, 35 of TA-Lib's 161 missing; 129 `ta_*` window form
-  rejected by 2026-09-02 benchmark), `scanlang.indicators.INDICATORS`
-  (14 entries), `scanlang.duckdb_sql.SQL_INDICATORS` (19 entries).
-  Pinned: dependency = official TA-Lib (not polars-talib); adapter seam
-  = `pl.map_groups(...).over(partition).fill_nan(None)`. Target: 14 new
-  tests across Slices B/C/D/E/F/G, no test deleted, 4 modified for
-  Slice B warm-up bumping.
+  TA-Lib twins — naive `LIKE 't_%'` is 359; `ta_*` has 126 TA-Lib
+  twins + 3 duckdb-only (`tan`, `tanh`, `table_info`) = 129 — the
+  129 figure is the wrong framing; the canonical coverage gap is
+  35-of-161 from 126 twins; `ta_*` window form rejected by 2026-09-02
+  benchmark), `scanlang.indicators.INDICATORS` (13 entries),
+  `scanlang.duckdb_sql.SQL_INDICATORS` (20 entries — verified via
+  `python -c "from scanlang.indicators import INDICATORS; ..."`,
+  not by doc reading). Pinned: dependency = official TA-Lib
+  (not polars-talib); adapter seam =
+  `df.group_by(partition, maintain_order=True).map_groups(lambda g:
+  g.with_columns(pl.Series(name, talib.<FN>(*arrays, timeperiod=n))
+  .fill_nan(None)))`
+  (the original draft's `pl.map_groups(...).over(partition).fill_nan(None)`
+  form is NOT executable — `Expr` has no `map_groups`, the result
+  `DataFrame` has no `.over`; see the seam section for the full
+  rationale and lazy-frame note). Target: 6 new tests (one per Slice
+  B/C/D/E/F/G; one function loops over its slice's entries), no test
+  deleted, no existing test modified.
+- 2026-09-04 (reviewer round 1) — corrections applied: STOCH warm-up
+  is `(fastk−1)+(slowk−1)+(slowd−1)`, not `fastk−1`; registry counts
+  corrected to 13 / 20 (was 14 / 19); MAMA / MIDPOINT / HT_TRENDMODE
+  moved out of the "missing from t_*" exclusion row (all three have
+  `t_*` forms, verified live via `duckdb_functions()`); TRANGE warm-up
+  corrected to 1 (was 14); ta_* count clarified as 126 TA-Lib twins
+  + 3 duckdb-only (was "129"); "14 new tests" replaced with the 6
+  named slice-test functions; "13+2" heading reconciled with the
+  "11+2" body text; TRANGE dummy-int precedent documented.

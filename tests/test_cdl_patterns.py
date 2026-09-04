@@ -7,8 +7,8 @@ group_by/map_groups seam (bar-0 NaN normalized to null), the duckdb engine
 the t_cdl* list lowering (lookback-1 leading nulls). The set is the
 value-parity intersection: every registered pattern is asserted identical,
 bar-for-bar, between live talib and the duckdb extension on the fixture —
-20 further talib patterns (threshold-relative: hammer, spinningtop, ...) are
-excluded because the extension diverges on them; see _CDL_PARITY.
+28 further talib patterns (threshold-relative: hammer, spinningtop, ...)
+are excluded because the extension diverges on them; see _CDL_PARITY.
 
 Determinism: the OHLC frame is embedded (tests/cdl_fixture_frame.json,
 regenerable via scripts/gen_cdl_fixtures.py) and the per-pattern hit pins

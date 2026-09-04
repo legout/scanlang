@@ -38,7 +38,7 @@ talib extension.
 | Tier | Indicators | Form |
 | --- | --- | --- |
 | Native window | `sma`, `rmin`, `rmax`, `shift`, `adr` | `AVG` / `MIN` / `MAX` / `LAG OVER (PARTITION BY ... ORDER BY ... ROWS BETWEEN ...)` with a `count`-guard so warm-up rows are NULL exactly like polars `rolling_*` |
-| talib `t_*` scalar | `ema`, `rsi`, `atr`, `roc`, `natr`, `slope`, plus the duckdb-only names | Per-partition list CTE, `t_fn` over the lists, `unnest` back to row-aligned output |
+| talib `t_*` scalar | `ema`, `rsi`, `atr`, `roc`, `natr`, `slope`, `macd`, `bbands_upper`, `bbands_lower`, `adx`, `aroon`, `kama`, `ht_trendline`, `stoch_k`, `stoch_d`, `wma`, `dema`, `tema`, `trima`, `mom`, `midprice`, `cci`, `willr`, `trange`, `ad` | Per-partition list CTE, `t_fn` over the lists, `unnest` back to row-aligned output. Multi-output `t_*` functions (`macd`, `bbands`, `aroon`, `stoch`) are struct-narrowed to one field per scanlang name (see [Multi-output field names](indicators.md#multi-output-field-names) in the indicators reference). |
 
 `adr` is a two-step window (true range needs `lag(close)`, and window
 functions cannot nest). The builder stages TR as its own CTE before

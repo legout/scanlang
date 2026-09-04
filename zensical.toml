@@ -93,6 +93,9 @@ pymdownx.superfences.custom_fences = [
 ]
 pymdownx.tabbed.alternate_style = true
 pymdownx.tasklist.custom_checkbox = true
+# allow the indicators reference page to include the generated
+# availability table (`--8<-- "path/to/_indicator_availability.md"`)
+pymdownx.snippets = { base_path = ["docs"] }
 
 [project.plugins.mkdocstrings]
 enabled = true

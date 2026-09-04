@@ -53,7 +53,7 @@ intersection (26 names: `cdlengulfing` + 25 further patterns in
 | Tier | Form | Notes |
 | --- | --- | --- |
 | `native window` | `AVG` / `MIN` / `MAX` / `LAG OVER (... ROWS BETWEEN ? PRECEDING AND CURRENT ROW)` with a `count`-guard | Exact on both engines (the count-guard aligns the warm-up nulls with polars `rolling_*`); the sma-family hit sets are identical for complete frames. |
-| `t_*` | Per-partition list CTE, `t_fn(list(col, ...), n)`, `unnest` back to row-aligned output | Duckdb-only at the implementation layer; the polars tier mirrors the function via the eager seam (where it exists) or a polars-native equivalent. |
+| `t_*` | Per-partition list CTE, `t_fn(list(col, ...), n)`, `unnest` back to row-aligned output | The duckdb-side lowering form. The polars side mirrors it either via the eager seam (where the same function is exact TA-Lib) or a polars-native rolling/ewm equivalent. |
 | `two-step window` | TR materialization CTE + count-guarded average (used by `adr`) | TR needs `lag(close)` and window functions cannot nest, so TR is staged as its own CTE before the average. Exact on both engines. |
 | `list CTE (struct-narrowed)` | Per-partition list CTE, multi-output `t_*` returns `LIST(STRUCT)`, the builder narrows to one field | Multi-output talib functions (`macd`, `bbands`, `aroon`, `stoch`); the SQL builder picks one struct field, the polars seam builder picks one numpy slot. |
 | `list CTE (two-stage)` | List-tier smoothing CTE + window-tier z-score CTE | Used by `rs_ratio` / `rs_momentum` (temporal z-score normalization); the z stage needs `STDDEV_POP` over a window which cannot nest in a `t_*` list call. |

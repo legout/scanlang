@@ -103,7 +103,7 @@ can flip. Called out in the 0.3.0 release notes.
 backend has its own [`SQL_INDICATORS`](../reference/duckdb-backend.md)
 that is a strict superset: the entries shared between the two have
 identical `arg_spec` and `required_cols`, and the duckdb-only names
-(`cdlengulfing`, `ht_trendline`, `stoch_k`, `stoch_d`) exist only on
+(`ht_trendline`, `stoch_k`, `stoch_d`) exist only on
 the duckdb side. The talib parity names (`macd`, `bbands_upper`,
 `bbands_lower`, `adx`, `aroon`, `kama`) are dual-engine: exact TA-Lib
 polars builders (the eager map_groups seam) on this side, `t_*`

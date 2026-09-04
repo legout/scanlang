@@ -36,8 +36,9 @@ stays polars-only):
   one struct field in SQL, and the same scanlang names now ALSO have
   polars parity builders in ``INDICATORS`` (the group_by/map_groups
   seam — exact TA-Lib values), so they validate and execute on both
-  engines like ``adx``/``kama``. ``cdlengulfing`` and ``ht_trendline``
-  remain duckdb-only.
+  engines like ``adx``/``kama``. ``ht_trendline`` remains duckdb-only;
+  ``cdlengulfing`` and the curated candlestick set (``_CDL_PARITY``)
+  run on both engines (see ``indicators``).
   [`validate(..., engine="duckdb")`](api.md#scanlang.compiler.validate)
   accepts these names — the polars engine rejects them.
 
@@ -231,8 +232,8 @@ def _kama(x, n: int, p: str, o: str, params: list) -> str:
     return _tcol("t_kama", n, p, o, params, ("close",))
 
 
-def _cdlengulfing(x, n, p: str, o: str, params: list) -> str:
-    return _tcol("t_cdlengulfing", None, p, o, params, ("open", "high", "low", "close"))
+def _ht_trendline(x, n, p: str, o: str, params: list) -> str:
+    return _tcol("t_ht_trendline", None, p, o, params, ("close",))
 
 
 def _cdl(name: str):
@@ -334,8 +335,9 @@ def _rs_smooth_router(x, n, p, o, params):
 # field per scanlang name in SQL; the first three ALSO have polars
 # parity builders in ``INDICATORS`` (the talib extra's map_groups
 # seam, exact TA-Lib values) — dual-engine names. stoch_k/stoch_d
-# stay SQL-only by design; ``cdlengulfing`` and ``ht_trendline``
-# remain duckdb-only.
+# stay SQL-only by design; ``ht_trendline`` remains duckdb-only, while
+# ``cdlengulfing`` and the ``_CDL_PARITY`` candlestick set are
+# dual-engine (same name set on both registries).
 SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "sma": (("expr", "int"), lambda x, n, p, o, pa: _win(x, n, p, o, pa, "AVG"), ()),
     "rmin": (("expr", "int"), lambda x, n, p, o, pa: _win(x, n, p, o, pa, "MIN"), ()),
@@ -367,13 +369,14 @@ SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "bbands_lower": (("int",), _bband("lower"), ("close",)),
     "adx": (("int",), _adx, ("high", "low", "close")),
     "aroon": (("int",), _aroon, ("high", "low")),
-    "cdlengulfing": (("int",), _cdlengulfing, ("open", "high", "low", "close")),
     "ht_trendline": (("int",), _ht_trendline, ("close",)),
     "stoch_k": (("int", "int", "int"), _stoch("slowk"), ("high", "low", "close")),
     "stoch_d": (("int", "int", "int"), _stoch("slowd"), ("high", "low", "close")),
     # candlestick-pattern parity: same dummy-int contract as cdlengulfing,
-    # registered for every pattern talib and the duckdb t_* extension share
-    # (indicators._cdl_names() supplies the identical name set)
+    # for the curated value-parity intersection (indicators._CDL_PARITY).
+    # cdlengulfing rides the loop too: the generic _cdl("cdlengulfing") emits
+    # exactly its 0.3.0 lowering (_tcol("t_cdlengulfing", ...)), one factory,
+    # one name set, zero special cases.
     **{
         name.lower(): (("int",), _cdl(name), ("open", "high", "low", "close"))
         for name in _cdl_names()
@@ -390,13 +393,15 @@ required_cols), but builders emit SQL fragments instead of ``pl.Expr`` and
 take ``(x, n, partition, order_column, params)``. Extend by insertion —
 ``SQL_INDICATORS["roc"] = (("int",), builder, ())``.
 
-This registry is a superset of ``INDICATORS``: the talib-only names
-``cdlengulfing``, ``ht_trendline``, ``stoch_k``, and ``stoch_d`` exist
+This registry is a superset of ``INDICATORS``: the duckdb-only names
+``ht_trendline``, ``stoch_k``, and ``stoch_d`` exist
 here and nowhere in ``INDICATORS`` — they run only on the duckdb engine
-(the community talib extension provides the ``t_*`` functions).
+(the community talib extension provides the ``t_*`` functions). The
+curated candlestick set rides the shared ``_cdl_names()`` loop and is
+deliberately dual-engine.
 [``validate(..., engine="duckdb")``](api.md#scanlang.compiler.validate)
 accepts them; the polars engine rejects them with
-``indicator 'aroon' requires engine='duckdb'`` (using ``cdlengulfing``
+``indicator 'aroon' requires engine='duckdb'`` (using ``stoch_k``
 as the example). All other names mirror an ``INDICATORS`` entry 1:1
 (same arg_spec, same required_cols) — the eager-seam parity names
 included, via their dual-engine INDICATORS builders (the ``talib``

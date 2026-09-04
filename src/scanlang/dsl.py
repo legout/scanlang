@@ -18,7 +18,7 @@ sma(200, close(22)) -> sma(shift(close, 22), 200), slope(10, sma(200)) ->
 slope(sma(close, 200), 10), max(252, close) -> rmax(close, 252).
 
 Talib-only indicator names (macd, bbands_upper/lower, aroon,
-cdlengulfing, ht_trendline — SQL_INDICATORS registry) parse as fn calls
+ht_trendline — SQL_INDICATORS registry) parse as fn calls
 too; validate() stays the single gate for engine fit (the polars engine
 rejects them). ``adx`` also parses here and is dual-engine — its
 INDICATORS parity builder (the ``talib`` extra) validates on the polars

@@ -346,25 +346,42 @@ def _cdl(fn: str):
     return build
 
 
+_CDL_PARITY = (
+    # the 25 patterns (+ cdlengulfing = 26 names) where the community duckdb
+    # talib extension (t_cdl*) is value-identical to talib on every probed
+    # bar: 5 random walks (seeds 11/777/2026/31/4242, 150 bars each) plus 60+
+    # crafted/degenerate scenarios (canonical reversals, doji family, gap
+    # structures, flat, wide spike — two generations of hand-tuned bars).
+    # All are structural/gap/count patterns. The other 27 extension-registered
+    # names diverge in VALUE (everything threshold-relative via talib's
+    # CandleSettings): the extension uses textbook thresholds, so e.g.
+    # t_cdlhammer says 0 where CDLHAMMER says 100 on identical bars, and
+    # t_cdldoji fires on a flat series where talib says 0. Parity beats
+    # coverage: excluded, not emulated (same policy as the 7 penetration-
+    # parameter patterns the extension lacks). Re-derive with
+    # scripts/gen_cdl_fixtures.py --classify when bumping either library.
+    "cdl2crows", "cdl3blackcrows", "cdl3linestrike", "cdl3outside",
+    "cdl3starsinsouth", "cdl3whitesoldiers", "cdlbreakaway",
+    "cdlconcealbabyswall", "cdlengulfing", "cdlgravestonedoji", "cdlhikkake",
+    "cdlhomingpigeon", "cdlidentical3crows", "cdlinneck", "cdlkicking",
+    "cdlkickingbylength", "cdlladderbottom", "cdlonneck",
+    "cdlrisefall3methods", "cdlseparatinglines", "cdlstalledpattern",
+    "cdltasukigap", "cdlthrusting", "cdlunique3river", "cdlupsidegap2crows",
+    "cdlxsidegap3methods",
+)
+
+
 def _cdl_names() -> list[str]:
     """Registered candlestick patterns (shared by both registries).
 
-    talib CDL* minus the penetration-parameter patterns the duckdb talib
-    extension does not register (excluded rather than emulated) minus
-    ``cdlengulfing`` (its own SQL builder, registered first in 0.3.0).
-    talib is imported at call time so the module stays extra-free.
+    The curated ``_CDL_PARITY`` intersection — static so registry insertion
+    stays talib-free (the module must import without the extra; a live-talib
+    membership check happens in the tests and in scripts/gen_cdl_fixtures.py).
+    cdlengulfing is in the set: its 0.3.0 SQL builder already lowers
+    identically, and the polars loop gives it its first eager builder without
+    touching its arg_spec/required_cols contract.
     """
-    missing = {
-        "CDLABANDONEDBABY", "CDLDARKCLOUDCOVER", "CDLEVENINGDOJISTAR",
-        "CDLEVENINGSTAR", "CDLMATHOLD", "CDLMORNINGDOJISTAR", "CDLMORNINGSTAR",
-    }
-    import talib
-
-    return sorted(
-        name for name in dir(talib)
-        if name.startswith("CDL") and name.isupper() and name not in missing
-        and name != "CDLENGULFING"
-    )
+    return list(_CDL_PARITY)
 
 
 # name -> (arg_spec, builder, required_cols)
@@ -456,16 +473,14 @@ if "aroon" not in INDICATORS:
     INDICATORS["aroon"] = (("int",), _aroon, ("high", "low"))
 # candlestick-pattern parity (same seam, extra-free import): every CDL name
 # is the dummy-int precedent (patterns take no period); on a talib-less
-# interpreter the entry still registers with a ()-builder so validate()
-# passes and apply()/compile() report the install hint. cdlengulfing rides
-# the same loop (its 0.3.0 duckdb-only entry gets a polars builder, but the
-# registry-insertion contract — arg_spec/required_cols — is untouched).
+# interpreter the entry still registers (the name set is static, no import
+# -time talib probe — the seam builders import talib only when n is bound,
+# the test_talib_missing.py contract), validate() passes, and apply()/
+# compile() report the install hint. cdlengulfing rides the same loop (its
+# 0.3.0 duckdb-only entry gets a polars builder, but the registry-insertion
+# contract — arg_spec/required_cols — is untouched).
 for _fn in _cdl_names():
-    INDICATORS.setdefault(_fn.lower(), (("int",), _cdl(_fn), ("open", "high", "low", "close")))
-INDICATORS.setdefault("cdlengulfing", (("int",), _cdl("CDLENGULFING"), ("open", "high", "low", "close")))
-# No import-time talib probe here: the seam builders import talib only when
-# n is bound (test_talib_missing.py contract) — the entry exists even without
-# the extra, validate() passes, and compile()/apply() report the install hint.
+    INDICATORS.setdefault(_fn.lower(), (("int",), _cdl(_fn.upper()), ("open", "high", "low", "close")))
 
 """Indicator registry: the ``{"fn": name}`` operand extension point.
 
@@ -494,7 +509,9 @@ dual-engine: the polars side uses the same group_by/map_groups seam as
 the duckdb side narrows the multi-output ``t_*`` struct in SQL.
 ``signal``/``hist``, the middle band, and ``aroon_down`` are not exposed
 (approved catalog: one field per name; the middle band is ``sma``).
-``cdlengulfing`` and ``ht_trendline`` remain duckdb-only, and
+``cdlengulfing`` is dual-engine now (the curated ``_CDL_PARITY``
+candlestick set shares its dummy-int signature on both engines);
+``ht_trendline`` remains duckdb-only, and
 ``stoch_k``/``stoch_d`` stay SQL-only by design.
 ``scanlang.compiler.validate(scan_def, engine="duckdb")`` accepts every
 SQL-side name.

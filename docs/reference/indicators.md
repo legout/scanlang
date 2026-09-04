@@ -32,7 +32,8 @@ which is a strict superset of `INDICATORS`.
 | `adx` | yes (talib seam) | yes | talib `t_adx` |
 | `aroon` | yes (talib seam, the up line) | yes | talib `t_aroon` (the up line) |
 | `kama` | yes (talib seam) | yes | talib `t_kama` |
-| `cdlengulfing` | — | yes | talib `t_cdlengulfing` (0/100 talib integer, match detected) |
+| `cdlengulfing` | yes (talib seam) | yes | talib `t_cdlengulfing` (graded int: 0/±100/±200/80) |
+| 24 further candlestick patterns (`_CDL_PARITY`) | yes (talib seam) | yes | talib `t_cdl*`; the value-parity intersection — 28 threshold-relative patterns and 7 penetration-parameter patterns are excluded (see `scanlang/indicators.py`) |
 | `ht_trendline` | — | yes | talib `t_ht_trendline` |
 
 Multi-output talib functions narrow to one scalar per scanlang name —

@@ -78,10 +78,11 @@ Returns an eager `pl.DataFrame`. `apply_sql` calls
 before executing (no-op after the first call). `validate()` runs
 first, so validation errors match the polars backend's error strings.
 
-If the scan uses a talib-only name (`cdlengulfing`,
-`ht_trendline`, `stoch_k`, `stoch_d`), pass
+If the scan uses a duckdb-only name (`ht_trendline`, `stoch_k`,
+`stoch_d`), pass
 `engine="duckdb"` to `validate` (the parity names `macd`,
-`bbands_upper`, `bbands_lower`, `adx`, `aroon`, `kama` validate on the
+`bbands_upper`, `bbands_lower`, `adx`, `aroon`, `kama`,
+`cdlengulfing`, and the `_CDL_PARITY` candlestick set validate on the
 default polars engine too — their exact builders need the `talib`
 extra and an eager frame):
 
@@ -125,7 +126,7 @@ for the warm-up contract.
 | --- | --- | --- |
 | Data is already a polars `DataFrame` / `LazyFrame` | polars | No translation cost; `apply` folds into the lazy plan |
 | Data is already in a duckdb lake or warehouse | duckdb | Push the scan into the existing connection; only hits cross the wire |
-| You need `cdlengulfing`, `ht_trendline`, or `stoch_k`/`stoch_d` | duckdb | These have no polars-builder equivalent (`macd`/`bbands`/`adx`/`aroon`/`kama` run on both) |
+| You need `ht_trendline`, or `stoch_k`/`stoch_d` | duckdb | These have no polars-builder equivalent (`macd`/`bbands`/`adx`/`aroon`/`kama`/`cdlengulfing` and the `_CDL_PARITY` candlestick set run on both) |
 | Full-universe scan against a parquet lake (~25M rows) | duckdb | `t_*` scalar form beats polars native on the benchmark (3.8 s vs 6.0 s) |
 | Notebooks, REPL, small frame in memory | polars | Eager start, no extension to install |
 

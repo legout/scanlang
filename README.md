@@ -100,7 +100,7 @@ Two backends consume the same scan-def dict. Pick per data edge.
 | Engine | Backend module | When to use it |
 | --- | --- | --- |
 | polars (default) | `scanlang.apply` | Frame is `pl.DataFrame` / `pl.LazyFrame`; notebook, REPL, small script; lazy pipeline into more polars ops. |
-| duckdb (opt-in) | `scanlang.duckdb_sql.apply_sql` | Data already lives in duckdb; need `macd` / `bbands` / `adx` / `aroon` / `cdlengulfing` / `ht_trendline` (talib extension); full-universe scans where the benchmark shows SQL pushdown beats polars. |
+| duckdb (opt-in) | `scanlang.duckdb_sql.apply_sql` | Data already lives in duckdb; need `ht_trendline` / `stoch_k` / `stoch_d` (duckdb-only talib names); full-universe scans where the benchmark shows SQL pushdown beats polars. |
 
 The duckdb backend:
 

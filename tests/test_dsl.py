@@ -159,9 +159,16 @@ def test_corpus_roc_natr_slope_query():
 
 def test_sql_only_name_parses_and_validates_engine_fit():
     """SQL-only names parse as fn calls; validate() is the engine gate."""
+    # adx is dual-engine now (INDICATORS parity builder): validates on polars
+    # when the catalog carries its required cols; aroon stays duckdb-only.
     d = p("adx(14)>25")
     assert d["filters"][0]["property"] == {"fn": "adx", "args": [14]}
-    assert "indicator 'adx' requires engine='duckdb'" in validate(d)[0]
+    ohlc = {**CORPUS_CATALOG, "high": {"label": "High", "dtype": "float"},
+            "low": {"label": "Low", "dtype": "float"}}
+    assert validate(d, catalog=ohlc) == []
+    d2 = p("aroon(14)>50")
+    assert d2["filters"][0]["property"] == {"fn": "aroon", "args": [14]}
+    assert "indicator 'aroon' requires engine='duckdb'" in validate(d2, catalog=ohlc)[0]
     # engine fit ok, but the required OHLC cols are still demanded from the catalog
     errs = validate(d, engine="duckdb")
     assert any("requires column 'high'" in e for e in errs)

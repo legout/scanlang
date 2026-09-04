@@ -8,6 +8,7 @@ by apply_sql itself).
 """
 
 import datetime as dt
+import math
 
 import polars as pl
 import pytest
@@ -242,7 +243,7 @@ def test_sql_registry_superset_of_indicators():
         assert SQL_INDICATORS[name][2] == req
     assert set(SQL_INDICATORS) > set(INDICATORS)
     assert set(SQL_INDICATORS) - set(INDICATORS) == {
-        "macd", "bbands_upper", "bbands_lower", "adx", "aroon", "cdlengulfing", "ht_trendline",
+        "macd", "bbands_upper", "bbands_lower", "aroon", "cdlengulfing", "ht_trendline",
     }
 
 
@@ -460,3 +461,56 @@ def test_talib_only_builders_execute(con):
     d = {"filters": [{"property": {"fn": "aroon", "args": [14]}, "op": ">=", "value": -1e9}]}
     ccc = [v for s, _, v in _sql_hits(con, d, cols=("symbol", "session", "c0"), catalog=cat) if s == "CCC"]
     assert ccc[:3] == pytest.approx([1300 / 14, 1200 / 14, 1100 / 14])
+
+
+def test_adx_parity_two_partitions_warmup_and_cross_engine(con):
+    """The 0.4.0 parity slice: adx(14) validate/compile/executes on BOTH engines.
+
+    polars = the INDICATORS talib builder via group_by(partition,
+    maintain_order=True).map_groups (NaN warm-up -> null); duckdb = the
+    existing SQL_INDICATORS['adx'] t_adx lowering. Covers: two partitions,
+    the 2n-1 warm-up contract, no NaN leaking into filters (null-filtered
+    identically), and exact mature-value equality cross-engine.
+    """
+    talib = pytest.importorskip("talib")
+    df = _bars()
+    cat = catalog_from_schema(df)
+    n, warmup = 14, 2 * 14 - 1
+    d = {"filters": [{"property": {"fn": "adx", "args": [n]}, "op": ">=", "value": 0}]}
+    assert validate(d, catalog=cat, engine="polars") == []
+    assert validate(d, catalog=cat, engine="duckdb") == []
+    # bare compile() targets the reserved staging column (apply() pre-stages __adx)
+    assert compile(dict(d), catalog=cat).meta.root_names() == ["__adx"]
+
+    # polars engine: apply() drives the map_groups builder over both partitions
+    pol = apply(df, d, catalog=cat)
+    assert set(pol["symbol"]) == {"AAA", "BBB", "CCC"} and pol.height == 3 * (N - warmup)
+
+    # warm-up: exactly 2n-1 hits per partition (null warm-up rows drop out of
+    # the filter — nulls and NaNs both fail the predicate, so nothing leaks)
+    per_sym = pol.group_by("symbol", maintain_order=True).len()
+    assert per_sym["len"].to_list() == [N - warmup] * 3
+    got = {(s, sess): v for s, sess, v in
+           pol.select("symbol", "session", next(c for c in pol.columns if c.startswith("__adx"))).rows()
+           if v is not None}
+    assert len(got) == 3 * (N - warmup)
+
+    # duckdb engine: same scan shape through t_adx (fresh dict — the polars
+    # apply leg rewrote `d`'s fn operand into the staged alias in place)
+    d_sql = {"filters": [{"property": {"fn": "adx", "args": [n]}, "op": ">=", "value": 0}]}
+    sql = apply_sql(con, d_sql, relation="bars", catalog=cat)
+    assert sql.height == 3 * (N - warmup)
+    sql_vals = {(s, sess): v for s, sess, v in sql.select("symbol", "session", "c0").rows()}
+    assert set(sql_vals) == set(got)  # identical mature hit sets (warm-up filtered identically)
+
+    # cross-engine + official-talib equality on every mature bar (exact tier)
+    ref = {}
+    for sym in ("AAA", "BBB", "CCC"):
+        sub = df.filter(pl.col("symbol") == sym).sort("session")
+        ref[sym] = talib.ADX(sub["high"].to_numpy(), sub["low"].to_numpy(), sub["close"].to_numpy(), timeperiod=n)
+    for (sym, sess), v in got.items():
+        bar = (sess - T0).days
+        r = ref[sym][bar]
+        assert not math.isnan(r), (sym, sess)
+        assert v == pytest.approx(float(r), abs=1e-9), (sym, sess, v, r)
+        assert sql_vals[(sym, sess)] == pytest.approx(float(r), abs=1e-9), (sym, sess)

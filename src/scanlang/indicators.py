@@ -4,13 +4,17 @@ Each entry:
 - ``arg_spec``: tuple with one tag per positional arg — ``"expr"`` (any operand) or
   ``"int"`` (literal int >= 1).
 - ``builder(*parsed, partition) -> pl.Expr``: polars-native; every window op uses
-  ``.over(partition)``.
+  ``.over(partition)``. Exception: ``adx`` is the TA-Lib parity slice — its
+  builder returns a ``DataFrame -> DataFrame`` callable for
+  ``group_by(partition, maintain_order=True).map_groups(...)`` (eager collect
+  required, ``talib`` extra required), matching the duckdb ``t_adx`` values
+  exactly, with null (NaN normalized) warm-up for the first ``2n-1`` bars.
 - ``required_cols``: columns that must exist in the catalog (e.g. ``atr`` needs
   ``high, low, close``).
 
-Extend by inserting entries; this shape is the contract. A future
-``scanlang.talib`` module (pyproject ``talib`` extra) populates the same dict for
-exact-value parity on collected results — it cannot participate in lazy pushdown.
+Extend by inserting entries; this shape is the contract. The ``talib``
+extra's parity builder populates the same dict this way — it cannot
+participate in lazy pushdown.
 
 Seeding note (``ema``/``rsi``/``atr``): TA-Lib seeds its recursions with an SMA
 of the first ``n`` values; polars ``ewm_mean(adjust=False)`` seeds from the
@@ -123,6 +127,26 @@ def _rs_momentum(e: pl.Expr, n: int, partition: str) -> pl.Expr:
     return _zscore(roc, n, partition)
 
 
+def _adx(n: int, partition: str):
+    """talib ADX per partition via the group_by/map_groups seam (0.4.0 parity plan).
+
+    Eager-only by contract (map_groups has no lazy form) and requires the
+    ``talib`` extra; collected results are exact TA-Lib — null for the first
+    ``2n-1`` bars per partition (NaN warm-up normalized), exact afterwards.
+    """
+    import talib
+
+    def _apply(df: pl.DataFrame) -> pl.DataFrame:
+        arr = talib.ADX(
+            df["high"].to_numpy(), df["low"].to_numpy(), df["close"].to_numpy(), timeperiod=n
+        )
+        # reserved "__adx" output name — apply() renames it to a unique alias
+        # (a user column literally named "adx" must not be clobbered)
+        return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
+
+    return _apply
+
+
 # name -> (arg_spec, builder, required_cols)
 #
 # Extend by inserting entries; the entry shape is the contract. See
@@ -181,6 +205,9 @@ INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "rs_momentum": (("expr", "int"), _rs_momentum, ()),
 }
 
+if "adx" not in INDICATORS:  # optional talib parity builder (eager, needs the talib extra)
+    INDICATORS["adx"] = (("int",), _adx, ("high", "low", "close"))
+
 """Indicator registry: the ``{"fn": name}`` operand extension point.
 
 Maps indicator name -> ``(arg_spec, builder, required_cols)``:
@@ -205,4 +232,8 @@ no native expression for them. ``macd``, ``bbands``, ``aroon``,
 ``cdlengulfing``, and ``ht_trendline`` live only in
 ``scanlang.duckdb_sql.SQL_INDICATORS`` (duckdb engine, talib extension);
 ``scanlang.compiler.validate(scan_def, engine="duckdb")`` accepts them.
+``adx`` is the first dual-engine exception: a registered parity builder
+here (the group_by/map_groups seam above, exact TA-Lib values) plus its
+``SQL_INDICATORS`` ``t_adx`` entry — the same name validates and executes
+on both engines.
 """

@@ -33,11 +33,14 @@ stays polars-only):
 - duckdb-only (talib extension, no polars builder):
   ``macd`` (the MACD line), ``bbands_upper``/``bbands_lower`` (two entries —
   bands are scanned as thresholds; the middle band is just ``sma``),
-  ``adx``, ``aroon`` (the up line), ``cdlengulfing`` (0/1 talib integer),
+  ``aroon`` (the up line), ``cdlengulfing`` (0/1 talib integer),
   ``ht_trendline``. Multi-output ``t_*`` functions return lists of structs;
   the builders narrow them to one struct field in SQL.
   [`validate(..., engine="duckdb")`](api.md#scanlang.compiler.validate)
-  accepts these names — the polars engine rejects them.
+  accepts these names — the polars engine rejects them. ``adx`` is the one
+  dual-engine name: its ``t_adx`` lowering lives here AND an exact TA-Lib
+  parity builder is registered in ``INDICATORS`` (the ``talib`` extra,
+  group_by/map_groups seam), so it validates and executes on both engines.
 
 Nested computed operands (``sma(rsi(close, 14), 5)``) stage as successive
 row-aligned CTEs — one column per indicator call. The probe answer
@@ -291,9 +294,11 @@ def _rs_smooth_router(x, n, p, o, params):
 # name -> (arg_spec, sql_builder, required_cols) — mirrors INDICATORS' contract.
 # The entry shape is the extension point for the SQL engine.
 #
-# duckdb-only entries (macd, bbands, adx, aroon, cdlengulfing, ht_trendline)
+# duckdb-only entries (macd, bbands, aroon, cdlengulfing, ht_trendline)
 # have no polars builder: validate(engine="duckdb") accepts them, the polars
-# engine rejects them. Multi-output t_* functions are narrowed to one series
+# engine rejects them. ``adx`` is dual-engine — it ALSO has an INDICATORS
+# parity builder (the talib extra's map_groups seam, exact TA-Lib values).
+# Multi-output t_* functions are narrowed to one series
 # at the SQL level: macd -> the MACD line (fast EMA - slow EMA, the
 # conventional "MACD" value; signal/hist are derived from it), bbands ->
 # upper AND lower as two entries (bands are scanned as thresholds; no single
@@ -332,14 +337,16 @@ take ``(x, n, partition, order_column, params)``. Extend by insertion —
 ``SQL_INDICATORS["roc"] = (("int",), builder, ())``.
 
 This registry is a superset of ``INDICATORS``: the talib-only names
-``macd``, ``bbands_upper``, ``bbands_lower``, ``adx``, ``aroon``,
+``macd``, ``bbands_upper``, ``bbands_lower``, ``aroon``,
 ``cdlengulfing``, and ``ht_trendline`` exist here and nowhere in
 ``INDICATORS`` — they run only on the duckdb engine (the community talib
 extension provides the ``t_*`` functions).
 [``validate(..., engine="duckdb")``](api.md#scanlang.compiler.validate)
 accepts them; the polars engine rejects them with
-``indicator 'adx' requires engine='duckdb'``. All other names mirror an
-``INDICATORS`` entry 1:1 (same arg_spec, same required_cols).
+``indicator 'aroon' requires engine='duckdb'``. All other names mirror an
+``INDICATORS`` entry 1:1 (same arg_spec, same required_cols) — ``adx``
+included, via its dual-engine INDICATORS parity builder (the ``talib``
+extra's group_by/map_groups seam).
 """
 
 

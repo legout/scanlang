@@ -113,14 +113,20 @@ def _adx_scan():
             }
 
 
+def _aroon_scan():
+    return {"filters": [{"property": {"fn": "aroon", "args": [14]},
+                         "op": ">", "value": 50}],
+            }
+
+
 def test_sql_only_indicator_rejected_on_polars():
-    errs = validate(_adx_scan(), catalog=OHLC_CATALOG)
-    assert "filters[0].property: indicator 'adx' requires engine='duckdb'" in errs
-    assert "filters[0].property: indicator 'adx' requires column 'high'" not in errs
+    errs = validate(_aroon_scan(), catalog=OHLC_CATALOG)
+    assert "filters[0].property: indicator 'aroon' requires engine='duckdb'" in errs
+    assert "filters[0].property: indicator 'aroon' requires column 'high'" not in errs
 
 
 def test_sql_only_indicator_ok_on_duckdb():
-    assert validate(_adx_scan(), catalog=OHLC_CATALOG, engine="duckdb") == []
+    assert validate(_aroon_scan(), catalog=OHLC_CATALOG, engine="duckdb") == []
     assert validate({"filters": [
         {"property": {"fn": "macd", "args": [12]}, "op": ">", "value": 0},
         {"property": {"fn": "bbands_upper", "args": [20]}, "op": ">", "value": {"col": "close"}},
@@ -133,7 +139,17 @@ def test_sql_only_indicator_ok_on_duckdb():
 
 def test_sql_only_never_compiles_on_polars():
     with pytest.raises(ValueError, match="requires engine='duckdb'"):
-        compile(_adx_scan())
+        compile(_aroon_scan())
+
+
+def test_adx_dual_engine_validate():
+    """adx is the parity slice: validates on BOTH engines (INDICATORS builder)."""
+    errs = validate(_adx_scan(), catalog=OHLC_CATALOG, engine="polars")
+    assert errs == []
+    assert validate(_adx_scan(), catalog=OHLC_CATALOG, engine="duckdb") == []
+    # missing high/low/close still surfaces on either engine (required_cols)
+    bad = {"filters": [{"property": {"fn": "adx", "args": [14]}, "op": ">", "value": 20}]}
+    assert "indicator 'adx' requires column 'high'" in validate(bad)[0]
 
 
 def test_engine_kwarg_default_unchanged():

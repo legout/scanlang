@@ -70,7 +70,7 @@ from collections.abc import Callable
 import polars as pl
 
 from scanlang.compiler import PROPERTY_CATALOG, _collect
-from scanlang.indicators import _RS_MOM_LOOKBACK, _RS_MOM_SPAN, _RS_SPAN
+from scanlang.indicators import _RS_MOM_LOOKBACK, _RS_MOM_SPAN, _RS_SPAN, _cdl_names
 
 __all__ = ["SQL_INDICATORS", "apply_sql", "compile_sql"]
 
@@ -235,6 +235,20 @@ def _cdlengulfing(x, n, p: str, o: str, params: list) -> str:
     return _tcol("t_cdlengulfing", None, p, o, params, ("open", "high", "low", "close"))
 
 
+def _cdl(name: str):
+    """``t_cdl*`` lowering for one candlestick pattern (mirrors ``indicators._cdl``).
+
+    Patterns read (open, high, low, close) and take no period — ``n`` rides
+    along unbound (the dummy-int precedent). All names lower identically, so
+    the registry loop closes over one factory.
+    """
+
+    def build(x, n, p: str, o: str, params: list) -> str:
+        return _tcol(f"t_{name.lower()}", None, p, o, params, ("open", "high", "low", "close"))
+
+    return build
+
+
 def _ht_trendline(x, n, p: str, o: str, params: list) -> str:
     return _tcol("t_ht_trendline", None, p, o, params, ("close",))
 
@@ -357,6 +371,13 @@ SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "ht_trendline": (("int",), _ht_trendline, ("close",)),
     "stoch_k": (("int", "int", "int"), _stoch("slowk"), ("high", "low", "close")),
     "stoch_d": (("int", "int", "int"), _stoch("slowd"), ("high", "low", "close")),
+    # candlestick-pattern parity: same dummy-int contract as cdlengulfing,
+    # registered for every pattern talib and the duckdb t_* extension share
+    # (indicators._cdl_names() supplies the identical name set)
+    **{
+        name.lower(): (("int",), _cdl(name), ("open", "high", "low", "close"))
+        for name in _cdl_names()
+    },
     # temporal z-score RS normalization (special two-stage lowering in fn())
     "rs_ratio": (("expr", "int"), _rs_smooth_router, ()),
     "rs_momentum": (("expr", "int"), _rs_smooth_router, ()),

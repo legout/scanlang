@@ -244,7 +244,7 @@ def test_sql_registry_superset_of_indicators():
         assert SQL_INDICATORS[name][2] == req
     assert set(SQL_INDICATORS) > set(INDICATORS)
     assert set(SQL_INDICATORS) - set(INDICATORS) == {
-        "cdlengulfing", "ht_trendline", "stoch_k", "stoch_d",
+        "ht_trendline", "stoch_k", "stoch_d",
     }
 
 

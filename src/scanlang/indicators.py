@@ -316,6 +316,57 @@ def _aroon(n: int, partition: str):
     return _apply
 
 
+# candlestick patterns: every registered CDL* has the identical (o,h,l,c)
+# -> int32 0/±100 signature, so one closure registers them all; the pattern
+# name is bound at builder-call time (default arg — the registry loop would
+# otherwise close over the loop variable)
+def _cdl(fn: str):
+    """talib candlestick pattern per partition via the group_by/map_groups seam.
+
+    ``fn`` is the exact talib function name (e.g. ``CDLHAMMER``); the SQL
+    side mirrors it as ``t_cdl<name>``. talib patterns read (open, high,
+    low, close), take no period, and return 0/±100 (int) — null nowhere
+    after bar 0 per partition.
+    """
+
+    def build(_n=None, partition: str = "symbol"):
+        import talib
+
+        def _apply(df: pl.DataFrame) -> pl.DataFrame:
+            arr = getattr(talib, fn)(
+                df["open"].to_numpy(),
+                df["high"].to_numpy(),
+                df["low"].to_numpy(),
+                df["close"].to_numpy(),
+            )
+            return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
+
+        return _apply
+
+    return build
+
+
+def _cdl_names() -> list[str]:
+    """Registered candlestick patterns (shared by both registries).
+
+    talib CDL* minus the penetration-parameter patterns the duckdb talib
+    extension does not register (excluded rather than emulated) minus
+    ``cdlengulfing`` (its own SQL builder, registered first in 0.3.0).
+    talib is imported at call time so the module stays extra-free.
+    """
+    missing = {
+        "CDLABANDONEDBABY", "CDLDARKCLOUDCOVER", "CDLEVENINGDOJISTAR",
+        "CDLEVENINGSTAR", "CDLMATHOLD", "CDLMORNINGDOJISTAR", "CDLMORNINGSTAR",
+    }
+    import talib
+
+    return sorted(
+        name for name in dir(talib)
+        if name.startswith("CDL") and name.isupper() and name not in missing
+        and name != "CDLENGULFING"
+    )
+
+
 # name -> (arg_spec, builder, required_cols)
 #
 # Extend by inserting entries; the entry shape is the contract. See
@@ -403,6 +454,15 @@ if "bbands_lower" not in INDICATORS:
     INDICATORS["bbands_lower"] = (("int",), _bbands("lower"), ("close",))
 if "aroon" not in INDICATORS:
     INDICATORS["aroon"] = (("int",), _aroon, ("high", "low"))
+# candlestick-pattern parity (same seam, extra-free import): every CDL name
+# is the dummy-int precedent (patterns take no period); on a talib-less
+# interpreter the entry still registers with a ()-builder so validate()
+# passes and apply()/compile() report the install hint. cdlengulfing rides
+# the same loop (its 0.3.0 duckdb-only entry gets a polars builder, but the
+# registry-insertion contract — arg_spec/required_cols — is untouched).
+for _fn in _cdl_names():
+    INDICATORS.setdefault(_fn.lower(), (("int",), _cdl(_fn), ("open", "high", "low", "close")))
+INDICATORS.setdefault("cdlengulfing", (("int",), _cdl("CDLENGULFING"), ("open", "high", "low", "close")))
 # No import-time talib probe here: the seam builders import talib only when
 # n is bound (test_talib_missing.py contract) — the entry exists even without
 # the extra, validate() passes, and compile()/apply() report the install hint.

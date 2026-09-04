@@ -120,11 +120,21 @@ def _aroon_scan():
 
 
 def test_sql_only_indicator_rejected_on_polars():
-    """cdlengulfing is the SQL-only example; aroon/macd/bbands are dual-engine now."""
-    errs = validate({"filters": [{"property": {"fn": "cdlengulfing", "args": [14]},
+    """stoch_k is the SQL-only example; cdlengulfing/aroon/macd are dual-engine now."""
+    errs = validate({"filters": [{"property": {"fn": "stoch_k", "args": [5, 3, 3]},
                                   "op": ">", "value": 0}]}, catalog=OHLC_CATALOG)
-    assert "filters[0].property: indicator 'cdlengulfing' requires engine='duckdb'" in errs
-    assert "filters[0].property: indicator 'cdlengulfing' requires column 'open'" not in errs
+    assert "filters[0].property: indicator 'stoch_k' requires engine='duckdb'" in errs
+    assert "filters[0].property: indicator 'stoch_k' requires column 'high'" not in errs
+    # cdlengulfing is dual-engine since the candlestick-parity card (its
+    # catalog shape — arg_spec/required_cols — is unchanged); the polars
+    # engine rejects it only on missing catalog cols now
+    eng = validate({"filters": [{"property": {"fn": "cdlengulfing", "args": [14]},
+                                 "op": ">", "value": 0}]})
+    # all three required-col errors, in required_cols order (no engine error)
+    assert eng == [
+        f"filters[0].property: indicator 'cdlengulfing' requires column {c!r}"
+        for c in ("open", "high", "low")
+    ]
     # aroon is dual-engine (INDICATORS parity builder): validates on polars
     # when the catalog carries its required cols
     assert validate(_aroon_scan(), catalog=OHLC_CATALOG) == []
@@ -144,8 +154,8 @@ def test_sql_only_indicator_ok_on_duckdb():
 
 def test_sql_only_never_compiles_on_polars():
     with pytest.raises(ValueError, match="requires engine='duckdb'"):
-        compile({"filters": [{"property": {"fn": "cdlengulfing", "args": [14]},
-                              "op": ">", "value": 0}]})
+        compile({"filters": [{"property": {"fn": "stoch_k", "args": [5, 3, 3]},
+                              "op": ">", "value": 0}]}, catalog=OHLC_CATALOG)
 
 
 def test_adx_dual_engine_validate():

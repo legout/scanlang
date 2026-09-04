@@ -99,14 +99,16 @@ can flip. Called out in the 0.3.0 release notes.
 
 ### Indicators and engines
 
-`INDICATORS` is the polars registry and stays polars-only. The duckdb
+`INDICATORS` is the polars registry. The duckdb
 backend has its own [`SQL_INDICATORS`](../reference/duckdb-backend.md)
 that is a strict superset: the entries shared between the two have
 identical `arg_spec` and `required_cols`, and the duckdb-only names
-(`macd`, `bbands_upper`, `bbands_lower`, `adx`, `aroon`, `cdlengulfing`,
-`ht_trendline`) exist only on the duckdb side. They are the talib
-extension's signature functions; polars has no native expression for
-them. [`validate(scan_def, *, engine=...)`](../reference/api.md)
+(`cdlengulfing`, `ht_trendline`, `stoch_k`, `stoch_d`) exist only on
+the duckdb side. The talib parity names (`macd`, `bbands_upper`,
+`bbands_lower`, `adx`, `aroon`, `kama`) are dual-engine: exact TA-Lib
+polars builders (the eager map_groups seam) on this side, `t_*`
+lowerings on the SQL side. [`validate(scan_def, *,
+engine=...)`](../reference/api.md)
 accepts the `engine` kwarg to gate which names pass. The full table:
 [Indicators reference](../reference/indicators.md).
 

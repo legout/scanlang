@@ -256,6 +256,66 @@ def _kama(n: int, partition: str):
     return _apply
 
 
+def _macd(n: int, partition: str):
+    """talib MACD per partition via the same group_by/map_groups seam as ``_adx``.
+
+    n = fast period; slow=26 / signal=9 stay at the talib defaults the SQL
+    ``_macd`` lowering pins (no parameter polymorphism — same signature both
+    engines). Emits the MACD line only: the struct's signal/hist fields are
+    not exposed (approved catalog narrows one field per scanlang name).
+    """
+    import talib
+
+    def _apply(df: pl.DataFrame) -> pl.DataFrame:
+        arr = talib.MACD(
+            df["close"].to_numpy(), fastperiod=n, slowperiod=26, signalperiod=9
+        )[0]
+        return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
+
+    return _apply
+
+
+def _bbands(side: str):
+    """talib BBANDS upper/lower band — one seam builder per scanlang name.
+
+    ``side`` picks the array slot (talib BBANDS order: upper, middle, lower;
+    the middle band is plain sma and stays unexposed). nbdev 2.0 / matype 0
+    are the talib defaults the SQL ``_bband`` lowering pins. talib is only
+    imported at n-bind time, so registry insertion stays extra-free.
+    """
+    idx = {"upper": 0, "lower": 2}[side]
+
+    def build(n: int, partition: str):
+        import talib
+        def _apply(df: pl.DataFrame) -> pl.DataFrame:
+            arr = talib.BBANDS(
+                df["close"].to_numpy(), timeperiod=n, nbdevup=2.0, nbdevdn=2.0, matype=0
+            )[idx]
+            return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
+
+        return _apply
+
+    return build
+
+
+def _aroon(n: int, partition: str):
+    """talib AROON up line per partition via the seam; down line unexposed.
+
+    talib.AROON returns (down, up) — index 1 is the up line, matching the
+    SQL ``_aroon`` lowering's ``['aroon_up']`` struct field. The up/down
+    swap is pinned by test (both lines differ per-row on the fixture).
+    """
+    import talib
+
+    def _apply(df: pl.DataFrame) -> pl.DataFrame:
+        _down, up = talib.AROON(
+            df["high"].to_numpy(), df["low"].to_numpy(), timeperiod=n
+        )
+        return df.with_columns(pl.Series("__adx", up).fill_nan(None))
+
+    return _apply
+
+
 # name -> (arg_spec, builder, required_cols)
 #
 # Extend by inserting entries; the entry shape is the contract. See
@@ -330,6 +390,22 @@ if "adx" not in INDICATORS:  # optional talib parity builders (eager, needs the 
     INDICATORS["adx"] = (("int",), _adx, ("high", "low", "close"))
 if "kama" not in INDICATORS:  # same seam: KAMA's adaptive ratio has no polars-native form
     INDICATORS["kama"] = (("int",), _kama, ("close",))
+# multi-output talib parity (same seam): MACD line, BBANDS upper/lower,
+# AROON up — one scalar column per scanlang name, struct fields narrowed at
+# the builder (never through the IR). arg_spec/required_cols mirror the
+# SQL_INDICATORS entries 1:1; signal/hist, the middle band, and aroon_down
+# stay unexposed per the approved catalog (middle band is just sma).
+if "macd" not in INDICATORS:
+    INDICATORS["macd"] = (("int",), _macd, ("close",))
+if "bbands_upper" not in INDICATORS:
+    INDICATORS["bbands_upper"] = (("int",), _bbands("upper"), ("close",))
+if "bbands_lower" not in INDICATORS:
+    INDICATORS["bbands_lower"] = (("int",), _bbands("lower"), ("close",))
+if "aroon" not in INDICATORS:
+    INDICATORS["aroon"] = (("int",), _aroon, ("high", "low"))
+# No import-time talib probe here: the seam builders import talib only when
+# n is bound (test_talib_missing.py contract) — the entry exists even without
+# the extra, validate() passes, and compile()/apply() report the install hint.
 
 """Indicator registry: the ``{"fn": name}`` operand extension point.
 
@@ -350,13 +426,16 @@ Registry mutation is the extension point:
 idempotently (guard with ``if "stdev" not in INDICATORS``) at import
 time. See [Extend INDICATORS](../how-to/extend-indicators.md).
 
-Multi-output talib indicators are NOT entries here — the polars engine has
-no native expression for them. ``macd``, ``bbands``, ``aroon``,
-``cdlengulfing``, and ``ht_trendline`` live only in
-``scanlang.duckdb_sql.SQL_INDICATORS`` (duckdb engine, talib extension);
-``scanlang.compiler.validate(scan_def, engine="duckdb")`` accepts them.
-``adx`` and ``kama`` are dual-engine exceptions: a registered parity builder
-here (the group_by/map_groups seam above, exact TA-Lib values) plus their
-``SQL_INDICATORS`` ``t_adx``/``t_kama`` entries — the same names validate
-and execute on both engines.
+Multi-output talib indicators narrow to **one scalar per scanlang name**
+(never a struct through the IR). ``macd`` (the MACD line),
+``bbands_upper``/``bbands_lower``, and ``aroon`` (the up line) are
+dual-engine: the polars side uses the same group_by/map_groups seam as
+``adx``/``kama`` (exact TA-Lib values, eager + ``talib`` extra required),
+the duckdb side narrows the multi-output ``t_*`` struct in SQL.
+``signal``/``hist``, the middle band, and ``aroon_down`` are not exposed
+(approved catalog: one field per name; the middle band is ``sma``).
+``cdlengulfing`` and ``ht_trendline`` remain duckdb-only, and
+``stoch_k``/``stoch_d`` stay SQL-only by design.
+``scanlang.compiler.validate(scan_def, engine="duckdb")`` accepts every
+SQL-side name.
 """

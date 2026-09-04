@@ -1,8 +1,10 @@
-"""0.4.0 single-output TA-Lib parity set: both engines, every signature family.
+"""0.4.0 TA-Lib parity set: both engines, every signature family.
 
 Families (per the plan's matrix): expression + period (wma/dema/tema/trima/
 mom + kama seam), OHLC(+volume) columns + period (midprice/cci/willr/trange),
-periodless (ad), multiple-period (stoch_k/stoch_d). Registry parity is
+periodless (ad), multiple-period (stoch_k/stoch_d), and multi-output
+narrowings (macd line, bbands_upper/lower, aroon up — one talib output field
+per scanlang name, seam-built on the polars side). Registry parity is
 generated from the registries themselves; execution tests cover partition
 isolation, null warm-up masks, and mature-value comparison against official
 TA-Lib 0.7.1 for BOTH tiers on BOTH engines: the closed-form polars builders
@@ -74,6 +76,13 @@ CASES = {
     "willr": ([14], lambda g: talib.WILLR(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy(), timeperiod=14), 13),
     "trange": ([14], lambda g: talib.TRANGE(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy()), 1),
     "ad": ([], lambda g: talib.AD(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy(), g["volume"].to_numpy()), 0),
+    # multi-output narrowings (polars side rides the adx/kama seam):
+    # each scanlang name is ONE talib output field, selected here at the
+    # same index the SQL struct narrowing picks.
+    "macd": ([12], lambda g: talib.MACD(g["close"].to_numpy(), fastperiod=12, slowperiod=26, signalperiod=9)[0], 33),
+    "bbands_upper": ([20], lambda g: talib.BBANDS(g["close"].to_numpy(), timeperiod=20, nbdevup=2.0, nbdevdn=2.0, matype=0)[0], 19),
+    "bbands_lower": ([20], lambda g: talib.BBANDS(g["close"].to_numpy(), timeperiod=20, nbdevup=2.0, nbdevdn=2.0, matype=0)[2], 19),
+    "aroon": ([14], lambda g: talib.AROON(g["high"].to_numpy(), g["low"].to_numpy(), timeperiod=14)[1], 14),  # (down, up) — index 1 is UP
 }
 
 # polars builders compared to talib per the plan's MATURE-convergence tier
@@ -100,7 +109,10 @@ def test_registry_parity_generated():
     must ALL be present, every arg_spec is expr/int only, and dual-engine
     names mirror 1:1 while stoch_k/stoch_d stay SQL-only.
     """
-    target = {"wma", "dema", "tema", "trima", "kama", "mom", "midprice", "cci", "willr", "trange", "ad", "stoch_k", "stoch_d"}
+    target = {
+        "wma", "dema", "tema", "trima", "kama", "mom", "midprice", "cci", "willr", "trange", "ad",
+        "macd", "bbands_upper", "bbands_lower", "aroon", "stoch_k", "stoch_d",
+    }
     assert target <= set(SQL_INDICATORS)
     dual = target - {"stoch_k", "stoch_d"}
     assert dual <= set(INDICATORS)
@@ -151,9 +163,10 @@ def test_parity_set_execution_and_mature_values(con):
     cat = catalog_from_schema(df)
     # dema/tema: the polars EMA chain emits from bar 0 (warm-up contract),
     # so those two have full-length polars output; the SQL tier nulls the
-    # documented warm-up window. Seam names pre-stage __<name>_0.
+    # documented warm-up window. Seam names pre-stage __<name>_0 (kama plus
+    # the multi-output seam fns — their builders return callables, not Exprs).
     full_polars = {"dema", "tema"}
-    seam_names = {"kama"}
+    seam_names = {"kama", "macd", "bbands_upper", "bbands_lower", "aroon"}
     for name, (args, ref_fn, warmup) in CASES.items():
         d = {"filters": [{"property": {"fn": name, "args": args}, "op": ">=", "value": -1e9}]}
         pol = apply(df, d, catalog=cat)
@@ -324,6 +337,122 @@ def test_stoch_k_d_struct_narrowing_and_warmup(con):
         for i, (k, dd) in enumerate(zip(got["c0"].to_list(), got["c1"].to_list(), strict=True)):
             assert abs(k - sk[warmup + i]) <= 1e-9, (sym, i, k, sk[warmup + i])
             assert abs(dd - sd[warmup + i]) <= 1e-9, (sym, i, dd, sd[warmup + i])
+
+
+def test_multi_output_swap_proof_warmup_and_cross_engine(con):
+    """Each multi-output field is the RIGHT field: not swapped, warm-up intact, engines agree.
+
+    Swap discrimination per name, against the sibling talib outputs:
+    - macd vs the signal line (crosses the line repeatedly on BBB's
+      oscillator geometry — a swapped builder flips the sign relation),
+    - bbands_upper/lower vs the middle band (sma) and each other
+      (upper != lower at every mature bar),
+    - aroon_up vs aroon_down (both vary per-row on the fixture; pinned
+      at the first mature bars per symbol — the old test_duckdb_sql pin
+      took min-order across symbols, so here each symbol's own head is
+      compared).
+
+    Warm-up null counts are the talib semantics: macd(12,26,9)=33,
+    bbands(20)=19, aroon(14)=14 per symbol (verified live, talib 0.7.1).
+    Cross-engine: identical hit sets for a discriminating filter on
+    each name.
+    """
+    df = _bars()
+    cat = catalog_from_schema(df)
+    warmups = {"macd": 33, "bbands_upper": 19, "bbands_lower": 19, "aroon": 14}
+    for name, warmup in warmups.items():
+        d = {"filters": [{"property": {"fn": name, "args": CASES[name][0]}, "op": ">=", "value": -1e9}]}
+        assert validate(d, catalog=cat) == [], name
+        pol = apply(df, d, catalog=cat)
+        alias = f"__{name}_0"
+        assert alias in pol.columns, name
+        assert pol.height == 3 * (N - warmup), name
+        assert pol.group_by("symbol", maintain_order=True).len()["len"].to_list() == [N - warmup] * 3, name
+        assert pol[alias].null_count() == 0, name
+        # polars seam == talib at every mature bar, per symbol
+        for sym in ("AAA", "BBB", "CCC"):
+            sub = df.filter(pl.col("symbol") == sym).sort("session")
+            ref = CASES[name][1](sub)
+            got = dict(zip(
+                sub["session"].to_list()[warmup:],
+                pol.filter(pl.col("symbol") == sym)[alias].to_list(),
+                strict=True,
+            ))
+            for i, sess in enumerate(sub["session"].to_list()[warmup:], start=warmup):
+                assert abs(got[sess] - ref[i]) <= 1e-9, (name, sym, sess, got[sess], ref[i])
+        # cross-engine hit-set equality on a discriminating filter
+        thr = {"macd": 0.0, "bbands_upper": 40.0, "bbands_lower": 20.0, "aroon": 60.0}[name]
+        dv = {"filters": [{"property": {"fn": name, "args": CASES[name][0]}, "op": ">", "value": thr}]}
+        pol_hits = apply(df, dv, catalog=cat).select("symbol", "session")
+        sql_hits = apply_sql(con, dv, relation="bars", catalog=cat).select("symbol", "session")
+        assert 0 < pol_hits.height < 3 * (N - warmup), (name, pol_hits.height)
+        assert pol_hits.equals(sql_hits.sort("symbol", "session")), name
+
+    # --- swap proofs -----------------------------------------------------
+    def _vals(name, warmup):
+        d = {"filters": [{"property": {"fn": name, "args": CASES[name][0]}, "op": ">=", "value": -1e9}]}
+        pol = apply(df, d, catalog=cat)
+        out = {}
+        for sym in ("AAA", "BBB", "CCC"):
+            sub = df.filter(pl.col("symbol") == sym).sort("session")
+            out[sym] = dict(zip(
+                sub["session"].to_list()[warmup:],
+                pol.filter(pl.col("symbol") == sym)[f"__{name}_0"].to_list(),
+                strict=True,
+            ))
+        return out
+
+    macd = _vals("macd", 33)
+    bup = _vals("bbands_upper", 19)
+    blo = _vals("bbands_lower", 19)
+    aro = _vals("aroon", 14)
+    for sym in ("AAA", "BBB", "CCC"):
+        sub = df.filter(pl.col("symbol") == sym).sort("session")
+        sessions = sub["session"].to_list()
+        _m, sig, _h = talib.MACD(sub["close"].to_numpy(), fastperiod=12, slowperiod=26, signalperiod=9)
+        _up, mid, _lo = talib.BBANDS(sub["close"].to_numpy(), timeperiod=20, nbdevup=2.0, nbdevdn=2.0, matype=0)
+        dn, _upl = talib.AROON(sub["high"].to_numpy(), sub["low"].to_numpy(), timeperiod=14)
+        # macd == talib macd[0] and is NOT the signal line. Discrimination
+        # runs on BBB only: AAA's close is a linear ramp, where the MACD
+        # line and its signal EMA coincide exactly (nothing to distinguish).
+        if sym == "BBB":
+            assert any(abs(macd[sym][sessions[i]] - sig[i]) > 1e-6 for i in range(33, N)), sym
+            flips = [macd[sym][sessions[i]] - sig[i] > 0 for i in range(33, N)]
+            assert any(flips) and not all(flips), "macd-vs-signal must cross on BBB"
+        # bbands: upper != lower everywhere mature; both differ from mid somewhere
+        for i in range(19, N):
+            assert bup[sym][sessions[i]] != blo[sym][sessions[i]], (sym, i)
+        assert any(abs(bup[sym][sessions[i]] - mid[i]) > 1e-6 for i in range(19, N)), sym
+        assert any(abs(blo[sym][sessions[i]] - mid[i]) > 1e-6 for i in range(19, N)), sym
+        # aroon: up != down somewhere per symbol; pin each symbol's first
+        # three mature values (down line diverges immediately; the values
+        # are the descending counts/14 * 100 of each symbol's own window)
+        assert any(abs(aro[sym][sessions[i]] - dn[i]) > 1e-6 for i in range(14, N)), sym
+        want3 = {
+            "AAA": [6 / 7 * 100, 11 / 14 * 100, 5 / 7 * 100],
+            "BBB": [4 / 7 * 100, 1 / 2 * 100, 3 / 7 * 100],
+            "CCC": [6 / 7 * 100, 11 / 14 * 100, 5 / 7 * 100],
+        }[sym]
+        for k in range(3):
+            assert aro[sym][sessions[14 + k]] == pytest.approx(want3[k]), (sym, k)
+
+
+def test_multi_output_unlisted_fields_stay_unregistered():
+    """Approved catalog: one field per multi-output talib function.
+
+    macd exposes only the line (signal/hist unexposed), bbands only the
+    upper/lower bands (the middle band is just sma(close, n)), aroon only
+    the up line (down unexposed). The exclusion holds on BOTH registries —
+    a scan can never reference a struct through the IR.
+    """
+    for excluded in ("macd_signal", "macd_hist", "bbands_middle", "aroon_down"):
+        assert excluded not in INDICATORS, excluded
+        assert excluded not in SQL_INDICATORS, excluded
+    # and the exposed names still carry the exact narrowings: registry
+    # mirrors 1:1 (same arg_spec, same required_cols) on both engines
+    for name, args in (("macd", [12]), ("bbands_upper", [20]), ("bbands_lower", [20]), ("aroon", [14])):
+        assert INDICATORS[name][0] == SQL_INDICATORS[name][0] == ("int",), name
+        assert INDICATORS[name][2] == SQL_INDICATORS[name][2], name
 
 
 def test_trange_ignores_n_and_kama_eager_contract(con):

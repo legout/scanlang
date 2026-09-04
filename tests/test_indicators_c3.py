@@ -120,9 +120,14 @@ def _aroon_scan():
 
 
 def test_sql_only_indicator_rejected_on_polars():
-    errs = validate(_aroon_scan(), catalog=OHLC_CATALOG)
-    assert "filters[0].property: indicator 'aroon' requires engine='duckdb'" in errs
-    assert "filters[0].property: indicator 'aroon' requires column 'high'" not in errs
+    """cdlengulfing is the SQL-only example; aroon/macd/bbands are dual-engine now."""
+    errs = validate({"filters": [{"property": {"fn": "cdlengulfing", "args": [14]},
+                                  "op": ">", "value": 0}]}, catalog=OHLC_CATALOG)
+    assert "filters[0].property: indicator 'cdlengulfing' requires engine='duckdb'" in errs
+    assert "filters[0].property: indicator 'cdlengulfing' requires column 'open'" not in errs
+    # aroon is dual-engine (INDICATORS parity builder): validates on polars
+    # when the catalog carries its required cols
+    assert validate(_aroon_scan(), catalog=OHLC_CATALOG) == []
 
 
 def test_sql_only_indicator_ok_on_duckdb():
@@ -139,7 +144,8 @@ def test_sql_only_indicator_ok_on_duckdb():
 
 def test_sql_only_never_compiles_on_polars():
     with pytest.raises(ValueError, match="requires engine='duckdb'"):
-        compile(_aroon_scan())
+        compile({"filters": [{"property": {"fn": "cdlengulfing", "args": [14]},
+                              "op": ">", "value": 0}]})
 
 
 def test_adx_dual_engine_validate():

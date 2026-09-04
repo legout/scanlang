@@ -27,12 +27,21 @@ which is a strict superset of `INDICATORS`.
 | `natr` | yes | yes | talib `t_natr` |
 | `slope` | yes | yes | talib `t_linearreg_slope` |
 | `rs_ratio`, `rs_momentum` | yes | yes | list-tier `t_ema`/`t_mom` + window-tier z (exact) |
-| `macd` | — | yes | talib `t_macd` (narrowed to the MACD line) |
-| `bbands_upper`, `bbands_lower` | — | yes | talib `t_bbands` (two entries; middle band is `sma`) |
-| `adx` | — | yes | talib `t_adx` |
-| `aroon` | — | yes | talib `t_aroon` (the up line) |
+| `macd` | yes (talib seam) | yes | talib `t_macd` (narrowed to the MACD line) |
+| `bbands_upper`, `bbands_lower` | yes (talib seam) | yes | talib `t_bbands` (two entries; middle band is `sma`) |
+| `adx` | yes (talib seam) | yes | talib `t_adx` |
+| `aroon` | yes (talib seam, the up line) | yes | talib `t_aroon` (the up line) |
+| `kama` | yes (talib seam) | yes | talib `t_kama` |
 | `cdlengulfing` | — | yes | talib `t_cdlengulfing` (0/100 talib integer, match detected) |
 | `ht_trendline` | — | yes | talib `t_ht_trendline` |
+
+Multi-output talib functions narrow to one scalar per scanlang name —
+never a struct through the IR. `macd` exposes only the MACD line
+(signal/hist unexposed), `bbands` only the upper/lower bands (the middle
+band is just `sma`), `aroon` only the up line (down unexposed),
+`stoch_k`/`stoch_d` the slow %K/%D lines (SQL-only by design). The
+polars column for a seam name (`macd`, `bbands_upper`, `bbands_lower`,
+`aroon`, `adx`, `kama`) is staged eagerly by `apply()` as `__<name>_0`.
 
 The polars builders for `ema`, `rsi`, and `atr` use the same recursion
 as TA-Lib; only the seed differs. TA-Lib seeds EMA/RSI/ATR with an SMA

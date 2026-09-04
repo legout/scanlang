@@ -30,21 +30,16 @@ stays polars-only):
   diverge for ``ema`` by design (the accepted warm-up contract, Q1 of the
   2026-09-02 plan; hit-set equality is therefore only claimed for
   sma-family scans).
-- duckdb-only (talib extension, no polars builder):
-  ``macd`` (the MACD line), ``bbands_upper``/``bbands_lower`` (two entries —
-  bands are scanned as thresholds; the middle band is just ``sma``),
-  ``aroon`` (the up line), ``cdlengulfing`` (0/1 talib integer),
-  ``ht_trendline``, and ``stoch_k``/``stoch_d`` (the slow %K/%D lines —
-  the first ``("int", "int", "int")`` arg_spec: fast-k, slow-k, slow-d
-  periods; ma_type slots stay at the talib default 0). Multi-output
-  ``t_*`` functions return lists of structs;
-  the builders narrow them to one struct field in SQL.
+- duckdb-side multi-output narrowing (``macd``, ``bbands_upper``/
+  ``bbands_lower``, ``aroon``, ``stoch_k``/``stoch_d``): multi-output
+  ``t_*`` functions return lists of structs; the builders narrow them to
+  one struct field in SQL, and the same scanlang names now ALSO have
+  polars parity builders in ``INDICATORS`` (the group_by/map_groups
+  seam — exact TA-Lib values), so they validate and execute on both
+  engines like ``adx``/``kama``. ``cdlengulfing`` and ``ht_trendline``
+  remain duckdb-only.
   [`validate(..., engine="duckdb")`](api.md#scanlang.compiler.validate)
-  accepts these names — the polars engine rejects them. ``adx`` and
-  ``kama`` are dual-engine names: their ``t_adx``/``t_kama`` lowerings
-  live here AND exact TA-Lib parity builders are registered in
-  ``INDICATORS`` (the ``talib`` extra, group_by/map_groups seam), so they
-  validate and execute on both engines.
+  accepts these names — the polars engine rejects them.
 
 Nested computed operands (``sma(rsi(close, 14), 5)``) stage as successive
 row-aligned CTEs — one column per indicator call. The probe answer
@@ -320,18 +315,13 @@ def _rs_smooth_router(x, n, p, o, params):
 # name -> (arg_spec, sql_builder, required_cols) — mirrors INDICATORS' contract.
 # The entry shape is the extension point for the SQL engine.
 #
-# duckdb-only entries (macd, bbands, aroon, cdlengulfing, ht_trendline,
-# stoch_k/stoch_d) have no polars builder: validate(engine="duckdb")
-# accepts them, the polars engine rejects them. ``adx`` and ``kama`` are
-# dual-engine — they ALSO have INDICATORS parity builders (the talib
-# extra's map_groups seam, exact TA-Lib values).
-# Multi-output t_* functions are narrowed to one series
-# at the SQL level: macd -> the MACD line (fast EMA - slow EMA, the
-# conventional "MACD" value; signal/hist are derived from it), bbands ->
-# upper AND lower as two entries (bands are scanned as thresholds; no single
-# "primary" band), aroon -> aroon_up (the trend-strength signal; aroon_down
-# is its mirror for short setups, add as its own entry if ever needed),
-# stoch -> slowk AND slowd as two entries (stoch_k/stoch_d).
+# ``macd``, ``bbands_upper``/``bbands_lower``, ``aroon``, and
+# ``stoch_k``/``stoch_d`` narrow multi-output ``t_*`` structs to one
+# field per scanlang name in SQL; the first three ALSO have polars
+# parity builders in ``INDICATORS`` (the talib extra's map_groups
+# seam, exact TA-Lib values) — dual-engine names. stoch_k/stoch_d
+# stay SQL-only by design; ``cdlengulfing`` and ``ht_trendline``
+# remain duckdb-only.
 SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "sma": (("expr", "int"), lambda x, n, p, o, pa: _win(x, n, p, o, pa, "AVG"), ()),
     "rmin": (("expr", "int"), lambda x, n, p, o, pa: _win(x, n, p, o, pa, "MIN"), ()),
@@ -380,16 +370,16 @@ take ``(x, n, partition, order_column, params)``. Extend by insertion —
 ``SQL_INDICATORS["roc"] = (("int",), builder, ())``.
 
 This registry is a superset of ``INDICATORS``: the talib-only names
-``macd``, ``bbands_upper``, ``bbands_lower``, ``aroon``,
 ``cdlengulfing``, ``ht_trendline``, ``stoch_k``, and ``stoch_d`` exist
 here and nowhere in ``INDICATORS`` — they run only on the duckdb engine
 (the community talib extension provides the ``t_*`` functions).
 [``validate(..., engine="duckdb")``](api.md#scanlang.compiler.validate)
 accepts them; the polars engine rejects them with
-``indicator 'aroon' requires engine='duckdb'``. All other names mirror an
-``INDICATORS`` entry 1:1 (same arg_spec, same required_cols) — ``adx`` and
-``kama`` included, via their dual-engine INDICATORS parity builders (the
-``talib`` extra's group_by/map_groups seam).
+``indicator 'aroon' requires engine='duckdb'`` (using ``cdlengulfing``
+as the example). All other names mirror an ``INDICATORS`` entry 1:1
+(same arg_spec, same required_cols) — the eager-seam parity names
+included, via their dual-engine INDICATORS builders (the ``talib``
+extra's group_by/map_groups seam).
 """
 
 

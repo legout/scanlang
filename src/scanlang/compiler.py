@@ -151,13 +151,15 @@ def _operand(spec, *, catalog: dict, partition: str) -> pl.Expr:
             try:
                 built = builder(*parsed, partition=partition)
             except ImportError as e:
-                # optional talib parity builders (adx) — the extra is not installed
+                # optional talib parity builders (adx, macd, bbands_*, aroon,
+                # kama) — the extra is not installed
                 raise ValueError(
                     f"indicator {spec['fn']!r} requires the optional 'talib' extra "
                     "(pip install 'scanlang[talib]')"
                 ) from e
             if not isinstance(built, pl.Expr):
-                # talib parity builders (adx) return DataFrame -> DataFrame callables
+                # talib parity builders (adx and friends) return
+                # DataFrame -> DataFrame callables
                 # for group_by(partition, maintain_order=True).map_groups — eager
                 # only. apply() pre-stages the reserved ``__adx`` column; a bare
                 # compile() targets that column (apply() compiles a rewritten
@@ -341,14 +343,14 @@ def validate(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, engine: str = 
     computed operands (a wrong-dtype join surfaces at collect time).
 
     With ``engine="duckdb"`` indicator names that exist only in
-    ``scanlang.duckdb_sql.SQL_INDICATORS`` (``macd``, ``bbands_upper``,
-    ``bbands_lower``, ``aroon``, ``cdlengulfing``,
+    ``scanlang.duckdb_sql.SQL_INDICATORS`` (``cdlengulfing``,
     ``ht_trendline``, ``stoch_k``, ``stoch_d``) validate OK; under the
     default ``engine="polars"`` they produce ``indicator 'aroon' requires
-    engine='duckdb'``. ``adx`` and ``kama`` are dual-engine: they have
+    engine='duckdb'``. ``adx``, ``kama``, ``macd``, ``bbands_upper``,
+    ``bbands_lower``, and ``aroon`` are dual-engine: they have
     ``INDICATORS`` parity builders (the ``talib`` extra, applied via
     group_by/map_groups over the partition) as well as ``SQL_INDICATORS``
-    ``t_adx``/``t_kama`` lowerings, so they validate under both engines
+    lowerings, so they validate under both engines
     without the duckdb-only error.
 
     Args:

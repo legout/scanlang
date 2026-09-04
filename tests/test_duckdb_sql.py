@@ -244,8 +244,7 @@ def test_sql_registry_superset_of_indicators():
         assert SQL_INDICATORS[name][2] == req
     assert set(SQL_INDICATORS) > set(INDICATORS)
     assert set(SQL_INDICATORS) - set(INDICATORS) == {
-        "macd", "bbands_upper", "bbands_lower", "aroon", "cdlengulfing", "ht_trendline",
-        "stoch_k", "stoch_d",
+        "cdlengulfing", "ht_trendline", "stoch_k", "stoch_d",
     }
 
 
@@ -409,18 +408,18 @@ def test_adr_roc_hits_equal_both_engines(con):
 
 
 def test_sql_only_names_run_on_duckdb(con):
-    """macd executes; polars engine refuses the same def."""
+    """macd executes on duckdb and validates on BOTH engines now (dual-engine)."""
     df = _bars()
     cat = catalog_from_schema(df)
     d = {"filters": [{"property": {"fn": "macd", "args": [12]}, "op": ">=", "value": -1000}]}
     hits = _sql_hits(con, d, catalog=cat)
     assert len(hits) == 3 * (N - 33)  # macd(12,26,9): first 33 bars NULL per symbol
-    assert "requires engine='duckdb'" in validate(d, catalog=cat)[0]
+    assert validate(d, catalog=cat) == []  # dual-engine: polars tier accepts it too
     assert validate(d, catalog=cat, engine="duckdb") == []
 
 
 def test_bbands_brackets_close_sql(con):
-    """bbands_lower < close < bbands_upper holds somewhere mature (duckdb only)."""
+    """bbands_lower < close < bbands_upper holds somewhere mature."""
     df = _bars()
     cat = catalog_from_schema(df)
     d = {"filters": [{"property": "session", "op": ">=", "value": str(T0 + dt.timedelta(days=60))},
@@ -428,7 +427,7 @@ def test_bbands_brackets_close_sql(con):
                      {"property": {"fn": "bbands_upper", "args": [20]}, "op": ">", "value": {"col": "close"}}]}
     hits = _sql_hits(con, d, catalog=cat)
     assert hits  # BBB's +/-8 oscillation crosses both bands
-    assert "requires engine='duckdb'" in validate(d, catalog=cat)[0]
+    assert validate(d, catalog=cat) == []
     # upper > lower everywhere mature (bands never invert on this frame)
     vals = apply_sql(con, {"filters": [{"property": {"fn": "bbands_upper", "args": [20]}, "op": ">=", "value": -1e9},
                                        {"property": {"fn": "bbands_lower", "args": [20]}, "op": ">=", "value": -1e9}]},

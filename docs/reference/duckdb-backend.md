@@ -114,10 +114,13 @@ duckdb-only by construction (no entry in `INDICATORS`). `compile` and
 name validation to include a talib-only name, the `INDICATORS`
 lowering path has no builder for it and raises `KeyError: '<name>'`
 at `compiler._operand` (`INDICATORS[spec["fn"]]` lookup) — no
-`ValueError`, no plan. The duckdb-only names (`macd`, `bbands_*`,
-`adx`, `aroon`, `cdlengulfing`, `ht_trendline`) must therefore route
-through `compile_sql` / `apply_sql` — the SQL backend is the only path
-that can plan and execute them. `compile`, `apply`, and `apply_sql`
+`ValueError`, no plan. The duckdb-only names (`cdlengulfing`,
+`ht_trendline`) must therefore route through `compile_sql` /
+`apply_sql` — the SQL backend is the only path that can plan and
+execute them. The formerly duckdb-only names (`macd`, `bbands_*`,
+`adx`, `aroon`, `kama`) now have `INDICATORS` parity builders (the
+talib extra's eager map_groups seam) and run on both engines.
+`compile`, `apply`, and `apply_sql`
 all accept the same `engine=` kwarg for consistency; the engine only
 widens the name allowlist, it does not retarget polars to emit SQL.
 
@@ -139,12 +142,15 @@ positional and must stay in lockstep with the assembled SQL.
 
 `SQL_INDICATORS` is a strict superset of `INDICATORS`: the entries
 shared between the two have identical `arg_spec` and `required_cols`.
-The duckdb-only entries (`macd`, `bbands_upper`, `bbands_lower`, `adx`,
-`aroon`, `cdlengulfing`, `ht_trendline`) exist only in
-`SQL_INDICATORS`; they have no polars-builder equivalent.
+The duckdb-only entries (`cdlengulfing`, `ht_trendline`,
+`stoch_k`, `stoch_d`) exist only in
+`SQL_INDICATORS`; they have no polars-builder equivalent (the seam
+names `macd`, `bbands_upper`, `bbands_lower`, `aroon`, `adx`, `kama`
+are shared).
 
-Multi-output `t_*` functions (`macd`, `bbands`, `aroon`) are narrowed
-to one series at the SQL level:
+Multi-output `t_*` functions (`macd`, `bbands`, `aroon`, `stoch`) are
+narrowed to one series at the SQL level — the same field the polars
+seam builders select:
 
 - `macd` -> the MACD line (`fast EMA - slow EMA`); signal and
   histogram are derived from it

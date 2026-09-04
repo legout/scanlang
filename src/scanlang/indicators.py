@@ -176,9 +176,10 @@ def _midprice(n: int, partition: str) -> pl.Expr:
 
 def _cci(n: int, partition: str) -> pl.Expr:
     tp = (pl.col("high") + pl.col("low") + pl.col("close")) / 3
-    return (tp - tp.rolling_mean(n).over(partition)) / (
-        0.015 * tp.rolling_std(n, ddof=0).over(partition)
-    )
+    # talib CCI denominator is the window MEAN ABSOLUTE DEVIATION, not std
+    # (rolling_map: no native rolling-MAD expr; probed == talib.CCI <= 3.5e-12)
+    mad = tp.rolling_map(lambda s: (s - s.mean()).abs().mean(), window_size=n).over(partition)
+    return (tp - tp.rolling_mean(n).over(partition)) / (0.015 * mad)
 
 
 def _willr(n: int, partition: str) -> pl.Expr:

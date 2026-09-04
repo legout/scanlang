@@ -5,9 +5,12 @@ mom + kama seam), OHLC(+volume) columns + period (midprice/cci/willr/trange),
 periodless (ad), multiple-period (stoch_k/stoch_d). Registry parity is
 generated from the registries themselves; execution tests cover partition
 isolation, null warm-up masks, and mature-value comparison against official
-TA-Lib 0.7.1 (exact tier, 1e-9) — the polars recursive builders (dema/tema)
-converge everywhere mature (first-value vs SMA seeding washes out), probed
-at <=1e-9 from the first non-null bar.
+TA-Lib 0.7.1 for BOTH tiers on BOTH engines: the closed-form polars builders
+(incl. the MAD-based cci), the SQL t_* tier, and the kama seam are exact at
+1e-9 at every mature bar; the polars recursive EMA builders (dema/tema) seed
+from the first value vs talib's SMA-of-n, so they are compared per the plan's
+MATURE-convergence tier (<0.01 from bar 112 at n=14 — they converge to ~1e-13
+well before it).
 """
 
 import datetime as dt
@@ -73,6 +76,12 @@ CASES = {
     "ad": ([], lambda g: talib.AD(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy(), g["volume"].to_numpy()), 0),
 }
 
+# polars builders compared to talib per the plan's MATURE-convergence tier
+# (<0.01 from bar 112) instead of the exact 1e-9 tier: recursive EMA chains
+# seed from the first value vs talib's SMA-of-n (documented contract).
+MATURE = 112
+_TIER = {"dema": 0.01, "tema": 0.01}
+
 
 @pytest.fixture(scope="module")
 def con():
@@ -128,8 +137,12 @@ def test_new_entries_validate_on_both_engines():
 
 
 def test_parity_set_execution_and_mature_values(con):
-    """Every family executes on BOTH engines; values == talib at every mature bar.
+    """Every family executes on BOTH engines; values == talib on both tiers.
 
+    The polars builder (staged alias for the kama seam, direct expr
+    evaluation for the rest) AND the SQL c0 tier are value-compared per
+    symbol at every mature bar: exact 1e-9 except dema/tema, whose polars
+    EMA chains run the plan's MATURE-convergence tier (<0.01 from bar 112).
     Partition isolation: hits split exactly 3 x (N - warmup) per symbol with
     per-partition warm-up nulls (null mask), and the null-count is asserted
     before the value comparison so a warm-up leak cannot pass silently.
@@ -155,23 +168,49 @@ def test_parity_set_execution_and_mature_values(con):
         alias = f"__{name}_0" if name in seam_names else None
         if alias is not None:
             assert alias in pol.columns and pol[alias].null_count() == 0, name
-        # mature-value parity vs official TA-Lib, per symbol, every mature bar
+        # mature-value parity vs official TA-Lib, per symbol, every mature bar,
+        # on BOTH tiers: the polars builder is evaluated on the sorted subframe
+        # (the exact hole the round-1 cci std-denominator bug fell through),
+        # the SQL c0 tier always, and the kama seam via its staged alias.
         for sym in ("AAA", "BBB", "CCC"):
             sub = df.filter(pl.col("symbol") == sym).sort("session")
             ref = ref_fn(sub)
             sessions = sub["session"].to_list()
-            if alias is not None:
+            s_vals = dict(zip(sessions[warmup:], sql.filter(pl.col("symbol") == sym)["c0"].to_list(), strict=True))
+            if name in seam_names:
                 p_vals = dict(zip(sessions[warmup:], pol.filter(pl.col("symbol") == sym)[alias].to_list(), strict=True))
             else:
-                p_vals = None
-            s_vals = dict(zip(sessions[warmup:], sql.filter(pl.col("symbol") == sym)["c0"].to_list(), strict=True))
+                arg_spec, builder, _req = INDICATORS[name]
+                parsed = [a if tag == "int" else pl.col(a["col"]) for tag, a in zip(arg_spec, args)]
+                p_expr = builder(*parsed, partition="symbol")
+                p_vals = dict(zip(sessions, sub.select(p_expr.alias("v"))["v"].to_list(), strict=True))
+            tol = _TIER.get(name, 1e-9)
+            from_bar = MATURE if name in _TIER else warmup
             for i, sess in enumerate(sessions[warmup:]):
                 r = ref[warmup + i]
                 if isinstance(r, float) and math.isnan(r):
                     continue  # talib's own unstable-period tail (none in this table)
-                if p_vals is not None:
-                    assert abs(p_vals[sess] - r) <= 1e-9, (name, sym, sess, p_vals[sess], r)
-                assert abs(s_vals[sess] - r) <= 1e-9, (name, sym, sess, s_vals[sess], r)
+                if warmup + i >= from_bar:
+                    assert abs(p_vals[sess] - r) <= tol, (name, "polars", sym, sess, p_vals[sess], r)
+                assert abs(s_vals[sess] - r) <= 1e-9, (name, "sql", sym, sess, s_vals[sess], r)
+
+
+def test_cci_cross_engine_hit_set_equality(con):
+    """Discriminating cci filter: identical hits on polars and duckdb.
+
+    The round-1 std-denominator bug produced 65 polars vs 179 duckdb hits
+    for cci(14) > 100 on this fixture — the engines must agree row-for-row
+    now that the builder uses the window MAD.
+    """
+    df = _bars()
+    cat = catalog_from_schema(df)
+    d = {"filters": [{"property": {"fn": "cci", "args": [14]}, "op": ">", "value": 100}]}
+    assert validate(d, catalog=cat) == []
+    pol = apply(df, d, catalog=cat).select("symbol", "session")
+    sql = apply_sql(con, d, relation="bars", catalog=cat).select("symbol", "session")
+    assert pol.height > 0, "probe must discriminate (nonempty, nonfull)"
+    assert pol.height < 3 * (N - 13)
+    assert pol.equals(sql.sort("symbol", "session"))
 
 
 def test_stoch_k_d_struct_narrowing_and_warmup(con):

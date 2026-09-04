@@ -1,8 +1,8 @@
 """Shared deterministic OHLCV fixture for the docs/notebooks examples.
 
 Both `01_first_scan.ipynb` (Jupyter) and `02_first_scan_marimo.py`
-(marimo) import from here so the notebooks describe the same scan over
-the same data, byte for byte.
+(marimo) import from here so the notebooks describe the same raw-first
+workflow and scored scan over the same data, byte for byte.
 
 The fixture matches the one in docs/examples/*.py: 60 trading days for
 two symbols (`AAA` linear uptrend 10 -> 69, `BBB` linear downtrend
@@ -51,8 +51,17 @@ def bars_lazy() -> pl.LazyFrame:
     return bars_eager().lazy()
 
 
-# Same scan definition both notebooks apply. Mirrors the tutorial.
-SCAN_DEF: dict = {
+# Raw scan used before scoring. It proves the compiler works on OHLCV input.
+RAW_SCAN_DEF: dict = {
+    "filters": [{
+        "property": {"fn": "ema", "args": [{"col": "close"}, 5]},
+        "op": ">",
+        "value": {"fn": "ema", "args": [{"col": "close"}, 20]},
+    }]
+}
+
+# Scored scan used after the raw scan. Mirrors the tutorial.
+SCORE_SCAN_DEF: dict = {
     "filters": [
         {"property": "score", "op": ">=", "value": 40},
         {"property": "phase", "op": "in", "value": ["BREAKOUT", "TREND", "BASE"]},
@@ -60,3 +69,6 @@ SCAN_DEF: dict = {
     "order_by": [{"property": "score", "dir": "desc"}],
     "limit": 5,
 }
+
+# Compatibility alias for callers of the old notebook fixture.
+SCAN_DEF = SCORE_SCAN_DEF

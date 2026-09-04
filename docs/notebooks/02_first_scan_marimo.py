@@ -1,24 +1,20 @@
-"""First scan in scanlang — marimo edition.
+"""Raw-first scan notebook in scanlang - marimo edition.
 
-A reactive marimo notebook that walks the same happy path as
-`01_first_scan.ipynb`, against the same fixture the
-`docs/examples/*.py` scripts use.
+This notebook runs a scan on raw OHLCV bars before scoring them. It then
+validates and applies a second screen to the scored output.
 
 Run interactively:
 
     uv run marimo edit docs/notebooks/02_first_scan_marimo.py
 
-Run as a script (no browser):
+Run headlessly:
 
     uv run marimo run --headless docs/notebooks/02_first_scan_marimo.py
 
-Export a static HTML snapshot (this is what CI uses):
+Export HTML:
 
     uv run marimo export html docs/notebooks/02_first_scan_marimo.py \\
         -o /tmp/scanlang-marimo.html --force
-
-The notebook stays headless: no network, no parquet, no lake — just
-120 rows of synthetic OHLCV data and one `apply()`.
 """
 
 import marimo
@@ -30,50 +26,76 @@ app = marimo.App(width="medium")
 @app.cell
 def _():
     import marimo as mo
+
     return (mo,)
 
 
 @app.cell
 def _():
     import sys
+    from pathlib import Path
 
-    # make _fixture importable when the notebook is run from the repo root
-    sys.path.insert(0, ".")
+    notebook_dir = Path("docs/notebooks")
+    if not (notebook_dir / "_fixture.py").exists():
+        notebook_dir = Path(".")
+    sys.path.insert(0, str(notebook_dir))
 
     import polars as pl
-    from _fixture import SCAN_DEF, bars_eager, bars_lazy
 
-    from scanlang import apply, score_bars, validate
+    from _fixture import RAW_SCAN_DEF, SCORE_SCAN_DEF, bars_eager, bars_lazy
+    from scanlang import apply, parse, score_bars, validate
 
-    return SCAN_DEF, apply, bars_eager, bars_lazy, pl, score_bars, validate
+    return (
+        RAW_SCAN_DEF,
+        SCORE_SCAN_DEF,
+        apply,
+        bars_eager,
+        bars_lazy,
+        parse,
+        pl,
+        score_bars,
+        validate,
+    )
 
 
 @app.cell
 def _(mo):
     mo.md(
         r"""
-        # First scan in scanlang — marimo edition
+        # First scan in scanlang - marimo edition
 
-        Same fixture as `01_first_scan.ipynb`. Each cell is reactive:
-        re-running a cell refreshes every cell that depends on it.
+        This notebook tests a scan on raw OHLCV bars first. It then scores the
+        bars and applies a second screen to the scored output.
 
         Run headlessly with:
 
         ```sh
-        uv run marimo export html docs/notebooks/02_first_scan_marimo.py \\
-            -o /tmp/scanlang-marimo.html --force
+        uv run marimo run --headless docs/notebooks/02_first_scan_marimo.py
         ```
         """
     )
 
 
 @app.cell
-def _(bars_eager, bars_lazy, pl):
+def _(bars_eager, bars_lazy):
     df_eager = bars_eager()
     df_lazy = bars_lazy()
-    print(type(df_eager).__name__, df_eager.shape)
-    print(type(df_lazy).__name__, df_lazy.collect().shape)
+    assert df_eager.shape == (120, 7)
+    assert df_lazy.collect().shape == (120, 7)
     return df_eager, df_lazy
+
+
+@app.cell
+def _(RAW_SCAN_DEF, apply, df_eager, parse, validate):
+    raw_scan = parse("ema(5) > ema(20)")
+    assert raw_scan == RAW_SCAN_DEF
+    raw_errors = validate(raw_scan)
+    assert raw_errors == []
+    raw_picks = apply(df_eager, raw_scan)
+    assert raw_picks.height == 59
+    assert raw_picks["symbol"].unique().to_list() == ["AAA"]
+    raw_picks.select("symbol", "session", "close").head()
+    return raw_errors, raw_picks, raw_scan
 
 
 @app.cell
@@ -84,36 +106,34 @@ def _(df_eager, score_bars):
 
 
 @app.cell
-def _(SCAN_DEF, validate):
-    errors = validate(SCAN_DEF)
-    print("errors:", errors)  # []
-    return (errors,)
-
-
-@app.cell
-def _(SCAN_DEF, apply, scored):
-    picks = apply(scored, SCAN_DEF)
-    picks.select("symbol", "score", "phase")
-    return (picks,)
-
-
-@app.cell
-def _(SCAN_DEF, df_lazy, pl, score_bars, apply):
-    lazy_picks = apply(score_bars(df_lazy), SCAN_DEF)
-    assert isinstance(lazy_picks, pl.LazyFrame)
-    lazy_picks.select("symbol", "score", "phase").collect()
-    return (lazy_picks,)
-
-
-@app.cell
-def _(errors, lazy_picks, picks, pl, scored):
-    # Lock the behaviour. marimo will surface these assertions as cell
-    # errors if a future change breaks the happy path.
+def _(SCORE_SCAN_DEF, apply, scored, validate):
+    errors = validate(SCORE_SCAN_DEF)
     assert errors == []
+    picks = apply(scored, SCORE_SCAN_DEF)
     assert picks.height == 1
     assert picks["symbol"][0] == "AAA"
-    assert picks["score"][0] == scored["score"].max()
+    picks.select("symbol", "score", "phase")
+    return errors, picks
+
+
+@app.cell
+def _(SCORE_SCAN_DEF, apply, df_lazy, pl, score_bars):
+    lazy_picks = apply(score_bars(df_lazy), SCORE_SCAN_DEF)
     assert isinstance(lazy_picks, pl.LazyFrame)
+    lazy_result = lazy_picks.select("symbol", "score", "phase").collect()
+    assert lazy_result.height == 1
+    lazy_result
+    return lazy_picks, lazy_result
+
+
+@app.cell
+def _(errors, lazy_result, picks, raw_errors, raw_picks, scored):
+    assert raw_errors == []
+    assert errors == []
+    assert raw_picks.height == 59
+    assert picks.height == 1
+    assert picks["score"][0] == scored["score"].max()
+    assert lazy_result.rows() == picks.select("symbol", "score", "phase").rows()
     print("02_first_scan_marimo OK")
 
 
@@ -123,11 +143,11 @@ def _(mo):
         r"""
         ## Where to next
 
-        - [`01_first_scan.ipynb`](./01_first_scan.ipynb) — same scan
-          in a Jupyter notebook, executed by `nbconvert --execute`.
-        - Tutorial: [First scan in 5 minutes](../tutorials/first-scan.md)
-        - How-to: [Eager vs lazy frames](../how-to/eager-frames.md)
-        - Examples: [docs/examples/](../examples/)
+        - [`01_first_scan.ipynb`](./01_first_scan.ipynb) - the same raw-first
+          workflow in Jupyter, executed by `nbconvert --execute`.
+        - [Use it](../use.md) - the complete library workflow.
+        - [Language](../language.md) - DSL and dict syntax.
+        - [Examples](../more.md#examples-and-notebooks) - runnable scripts.
         """
     )
 

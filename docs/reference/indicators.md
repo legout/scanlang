@@ -3,56 +3,158 @@
 Built-in indicators live in [`INDICATORS`](../reference/api.md) and can
 be extended by insertion. Each entry is `(arg_spec, builder, required_cols)`:
 
-- `arg_spec` — tuple of `"expr"` (any operand) or `"int"` (literal int >= 1)
+- `arg_spec` — tuple with one tag per positional arg — `"expr"` (any
+  operand: column ref, nested indicator call, arithmetic) or `"int"`
+  (literal int >= 1)
 - `builder(*parsed, partition) -> pl.Expr` — your polars expression,
-  window ops via `.over(partition)`
-- `required_cols` — column names the catalog must have
+  window ops via `.over(partition)`. **Exception:** the
+  [TA-Lib parity seam](#ta-lib-parity-seam-multi-output-narrowing) builders
+  (adx, kama, macd, bbands_*, aroon, cdlengulfing, the curated candlestick
+  set) return a `DataFrame -> DataFrame` callable for
+  `group_by(partition, maintain_order=True).map_groups(...)` — eager
+  collect required, the `talib` extra required, exact TA-Lib values.
+- `required_cols` — column names the catalog must have (e.g. `atr`
+  needs `high, low, close`)
 
 ## Engine availability
 
 Indicators run on one or both backends. The polars backend is the
 default and supports everything in `INDICATORS`. The duckdb backend
-adds the rest through [`SQL_INDICATORS`](../reference/duckdb-backend.md),
-which is a strict superset of `INDICATORS`.
+adds the rest through [`SQL_INDICATORS`](../reference/duckdb-backend.md)
+— a strict superset of `INDICATORS`.
 
-| Indicator | polars | duckdb | Lowering on duckdb |
+The full table is **generated** from the live registries (single
+source of truth, no hand-maintained counts that can drift). Regenerate
+after any registry change with:
+
+```sh
+uv run python scripts/gen_indicator_availability.py
+```
+
+The generator writes:
+
+- `docs/reference/_indicator_availability.md` — the dual-engine subset
+  shown below (the names present in both registries)
+- `docs/reference/_indicator_availability_full.md` — every name,
+  including the three duckdb-only entries (`ht_trendline`,
+  `stoch_k`, `stoch_d`)
+
+--8<-- "reference/_indicator_availability.md"
+
+The three duckdb-only names (`ht_trendline`, `stoch_k`, `stoch_d`) live
+in the full table only — they have no polars builder (the community
+talib extension is the only implementation). The curated candlestick
+intersection (26 names: `cdlengulfing` + 25 further patterns in
+`_CDL_PARITY`) shares one signature on both engines
+(`("int",)`, `("open", "high", "low", "close")`).
+
+### Tier legend
+
+| Tier | Form | Notes |
+| --- | --- | --- |
+| `native window` | `AVG` / `MIN` / `MAX` / `LAG OVER (... ROWS BETWEEN ? PRECEDING AND CURRENT ROW)` with a `count`-guard | Exact on both engines (the count-guard aligns the warm-up nulls with polars `rolling_*`); the sma-family hit sets are identical for complete frames. |
+| `t_*` | Per-partition list CTE, `t_fn(list(col, ...), n)`, `unnest` back to row-aligned output | Duckdb-only at the implementation layer; the polars tier mirrors the function via the eager seam (where it exists) or a polars-native equivalent. |
+| `two-step window` | TR materialization CTE + count-guarded average (used by `adr`) | TR needs `lag(close)` and window functions cannot nest, so TR is staged as its own CTE before the average. Exact on both engines. |
+| `list CTE (struct-narrowed)` | Per-partition list CTE, multi-output `t_*` returns `LIST(STRUCT)`, the builder narrows to one field | Multi-output talib functions (`macd`, `bbands`, `aroon`, `stoch`); the SQL builder picks one struct field, the polars seam builder picks one numpy slot. |
+| `list CTE (two-stage)` | List-tier smoothing CTE + window-tier z-score CTE | Used by `rs_ratio` / `rs_momentum` (temporal z-score normalization); the z stage needs `STDDEV_POP` over a window which cannot nest in a `t_*` list call. |
+
+## Multi-output field names
+
+Multi-output talib functions narrow to **one scalar per scanlang name**
+— never a struct through the IR. The approved catalog (no struct
+through the IR, one field per name):
+
+| scanlang name | talib function | Field exposed | Field(s) unexposed |
 | --- | --- | --- | --- |
-| `sma` | yes | yes | native window (exact) |
-| `rmin`, `rmax`, `shift` | yes | yes | native window (exact) |
-| `ema` | yes (Wilder-style seed) | yes | talib `t_ema` (SMA-seeded) |
-| `rsi` | yes (Wilder smoothing) | yes | talib `t_rsi` (Wilder, SMA-seeded) |
-| `atr` | yes (Wilder smoothing) | yes | talib `t_atr` (Wilder, SMA-seeded) |
-| `adr` | yes | yes | native two-step window (exact) |
-| `roc` | yes | yes | talib `t_roc` |
-| `natr` | yes | yes | talib `t_natr` |
-| `slope` | yes | yes | talib `t_linearreg_slope` |
-| `rs_ratio`, `rs_momentum` | yes | yes | list-tier `t_ema`/`t_mom` + window-tier z (exact) |
-| `macd` | yes (talib seam) | yes | talib `t_macd` (narrowed to the MACD line) |
-| `bbands_upper`, `bbands_lower` | yes (talib seam) | yes | talib `t_bbands` (two entries; middle band is `sma`) |
-| `adx` | yes (talib seam) | yes | talib `t_adx` |
-| `aroon` | yes (talib seam, the up line) | yes | talib `t_aroon` (the up line) |
-| `kama` | yes (talib seam) | yes | talib `t_kama` |
-| `cdlengulfing` | yes (talib seam) | yes | talib `t_cdlengulfing` (graded int: 0/±100/±200/80) |
-| 24 further candlestick patterns (`_CDL_PARITY`) | yes (talib seam) | yes | talib `t_cdl*`; the value-parity intersection — 28 threshold-relative patterns and 7 penetration-parameter patterns are excluded (see `scanlang/indicators.py`) |
-| `ht_trendline` | — | yes | talib `t_ht_trendline` |
+| `macd` | `MACD(close, fast, 26, 9)` | `macd` (the MACD line) | `macd_signal`, `macd_hist` (the histogram is `macd − signal`; both derivable) |
+| `bbands_upper` | `BBANDS(close, n, 2.0, 2.0, 0)` | `upperband` | `middleband` (= `sma(close, n)`), `lowerband` |
+| `bbands_lower` | `BBANDS(close, n, 2.0, 2.0, 0)` | `lowerband` | `middleband`, `upperband` |
+| `aroon` | `AROON(high, low, n)` | `aroon_up` | `aroon_down` (its mirror for short setups; add a separate entry if ever needed) |
+| `stoch_k` | `STOCH(high, low, close, fastk, slowk, 0, slowd, 0)` | `slowk` | `slowd` (its own scanlang name), `fastk` |
+| `stoch_d` | `STOCH(high, low, close, fastk, slowk, 0, slowd, 0)` | `slowd` | `slowk`, `fastk` |
 
-Multi-output talib functions narrow to one scalar per scanlang name —
-never a struct through the IR. `macd` exposes only the MACD line
-(signal/hist unexposed), `bbands` only the upper/lower bands (the middle
-band is just `sma`), `aroon` only the up line (down unexposed),
-`stoch_k`/`stoch_d` the slow %K/%D lines (SQL-only by design). The
-polars column for a seam name (`macd`, `bbands_upper`, `bbands_lower`,
-`aroon`, `adx`, `kama`) is staged eagerly by `apply()` as `__<name>_0`.
+The polars engine stages the eager seam names (`adx`, `kama`, `macd`,
+`bbands_upper`, `bbands_lower`, `aroon`, `cdlengulfing`, the curated
+candlestick set) via `group_by(partition, maintain_order=True).map_groups(...)`
+and pre-materializes the result as `__<name>_0` in the predicate. The
+column is always named with the `__<name>_0` prefix so a user column
+literally named `adx` (or any other scanlang name) cannot be clobbered.
 
-The polars builders for `ema`, `rsi`, and `atr` use the same recursion
-as TA-Lib; only the seed differs. TA-Lib seeds EMA/RSI/ATR with an SMA
-of the first `n` values; polars `ewm_mean(adjust=False)` seeds from
-the first value. Exact match is not expr-expressible, so the contract
-is: values **converge after ~4×n bars** (the benchmark measures full
-agreement within 0.01 by ~7.6n). Early-window divergence is expected;
-the warm-up rows are excluded from scan hits by the count-guard or by
-polars' own null propagation, so the convergence contract is enough
-for mature-bar scans.
+## Warm-up / null behavior
+
+Indicator warm-up is the bar count before a function emits its first
+real value per partition. The contract differs by family:
+
+| Family | Warm-up | Why |
+| --- | --- | --- |
+| `sma` / `rmin` / `rmax` / `adr` | `n − 1` rows null (count-guard on both engines) | Native window; first `n-1` bars are below the window size. Identical on both engines — sma-family scans have **identical** hit sets. |
+| `ema` / `rsi` / `atr` / `natr` / `dema` / `tema` / `trima` | polars: `~4n` (convergence) / duckdb: `n` (SMA-seeded) | TA-Lib seeds with an SMA of the first `n` values; polars `ewm_mean(adjust=False)` seeds from the first value. The recursions match, so values **converge** after ~4n bars (the benchmark measures full agreement within 0.01 by ~7.6n). Early-window divergence is by design. Mature-bar scans see consistent values across engines. |
+| `kama` | `n` rows null | Eager seam runs `talib.KAMA` (exact); null for the first `n` bars. |
+| `roc` / `mom` | `n` rows null | Bar `n` has no `n`-bar prior reference. |
+| `wma` | `n − 1` | Rolling sum needs `n` rows. |
+| `macd` | 33 rows (fast=12, slow=26, signal=9) | Combined lookback of slow + signal periods. |
+| `adx` | `2n − 1` rows | ADX itself needs `2n-1` for the smoothed DX. |
+| `ht_trendline` | 63 rows (default) | Dominant cycle, TA-Lib documented. |
+| `cci` / `willr` | `n − 1` rows | Rolling MAD / rolling max-min over `n`. |
+| `trange` | 1 row (bar 0) | Previous close at bar 0 is null; the `_tr` polars builder and the `_adr_tr` SQL builder both pin bar 0 to null identically. |
+| `slope` | `n − 1` rows | Rolling sums need `n` rows. |
+| `midprice` | `n − 1` | Same windowing. |
+| `trima` | `n − 1` | Two-stage SMA, both engines identical. |
+| `stoch_k` / `stoch_d` | `fastk − 1` | The `t_stoch` warm-up (the lookback is `fastk`). |
+| `aroon` | `n` rows | `AROON` looks back `n` bars; the seam's NaN is normalized to null. |
+| `bbands_upper` / `bbands_lower` | `n − 1` rows | SMA of length `n` inside BBANDS. |
+| `ad` | 0 (cumulative) | No warm-up; cumulative from bar 0 (zero-range bars pin 0.0 to avoid NaN propagation). |
+| Candlestick set (`_CDL_PARITY`) | 0 rows (patterns are 2-bar, no warm-up) | Patterns read bar i and bar i−1; the polars seam normalizes NaN to null (it never fires here), the SQL `t_cdl*` warm-up is the leading null. `>= -200` predicate drops both identically. |
+
+**Cross-engine scan equality is therefore only claimed for sma-family
+scans on complete frames** (and for the curated candlestick set, where
+both engines hit the identical `(symbol, session)` set on every mature
+bar — verified in `tests/test_cdl_patterns.py`). For ema/rsi/atr-class
+scans, values agree to <0.01 at mature bars; hit sets can still differ
+in the warm-up window.
+
+**`flat`-series guards** (preserved on both engines, pinned by
+`tests/test_indicators_c3.py`):
+
+- `rsi`: zero-loss (flat) row returns 100, not NaN (NaN would pass a
+  polars `>` filter and falsely fire a "RSI > 85" scan).
+- `cci`: zero-MAD window returns 0, not NaN (same NaN-passes-filter
+  trap).
+- `ad`: zero-range (high==low) bar contributes 0.0 to the cumsum (same
+  trap; TA-Lib does the same).
+
+## TA-Lib parity seam — multi-output narrowing
+
+The polars engine executes the talib parity names via the same seam
+(`group_by(partition, maintain_order=True).map_groups(...)`):
+
+- Eager-only by contract (map_groups has no lazy form), and requires
+  the `talib` extra (`uv add 'scanlang[talib]'`).
+- Values are **exact TA-Lib**, bar-for-bar. NaN warm-up is normalized
+  to `None` so the filter drops it identically to the duckdb engine's
+  SQL `t_*` warm-up.
+- The same scanlang name covers **both** engines: `INDICATORS[name]`
+  for polars, `SQL_INDICATORS[name]` for duckdb. Same `arg_spec`,
+  same `required_cols` (asserted by
+  `tests/test_duckdb_sql.py::test_sql_registry_superset_of_indicators`).
+
+The seam is used by: `adx`, `kama`, `macd`, `bbands_upper`,
+`bbands_lower`, `aroon`, `cdlengulfing`, and the curated candlestick
+set (`_CDL_PARITY`, 25 further patterns). The two-tier
+(roon-bband) lowerings and the multi-output struct-narrowing are
+covered in the [duckdb backend reference](../reference/duckdb-backend.md#two-tier-lowering)
+(the SQL side). `stoch_k` / `stoch_d` are **SQL-only by design** (no
+polars parity builder — the community talib extension is the
+implementation); `ht_trendline` is also SQL-only.
+
+### Empty / talib-less interpreter
+
+`apply()` reports the install hint when the seam name is referenced
+but the `talib` extra is missing (e.g. `requires the optional 'talib'
+extra`). The registry still validates the scan (`validate()` returns
+`[]`) because the entry shape is static and the seam builder imports
+`talib` only when its n is bound. See
+`tests/test_talib_missing.py` for the contract.
 
 ## Built-in
 
@@ -71,6 +173,14 @@ for mature-bar scans.
 | `shift` | `(expr, n)` | — | shift over partition |
 | `rs_ratio` | `(expr, n)` | — | trailing z of EMA(5) of `expr`, re-centered at 100 |
 | `rs_momentum` | `(expr, n)` | — | trailing z of EMA(3) of the 4-bar ROC of `expr`, re-centered at 100 |
+
+The full reference for the parity set (`wma`, `dema`, `tema`, `trima`,
+`mom`, `midprice`, `cci`, `willr`, `trange`, `ad`, the multi-output
+`macd` / `bbands_upper` / `bbands_lower` / `aroon`, the seam names
+`adx` / `kama`, and the curated candlestick set) lives in the
+[availability table](#engine-availability) above. Their semantics are
+the TA-Lib reference (values are exact cross-engine — see the seam
+section).
 
 ### `sma(expr, n)`
 
@@ -91,7 +201,8 @@ null; the filter drops them.
 matches TA-Lib / TradingView defaults. TA-Lib seeds with an SMA of the
 first `n` values; polars seeds from the first value — the recursions
 match, so values converge after ~4n bars. Early-window rows diverge by
-design (the accepted warm-up contract; see the alignment note above).
+design (the accepted warm-up contract; see [Warm-up / null
+behavior](#warm-up-null-behavior) above).
 
 ### `rsi(expr, n)`
 
@@ -103,7 +214,8 @@ Standard RSI on the delta of `expr`: Wilder-smoothed gain / (gain +
 loss), scaled to 0-100, with nulls filled to 50.0. Same warm-up
 behavior as `ema`: SMA-seeded vs first-value-seeded, values converge
 after ~4n. TA-Lib RSI agrees to <0.5 points everywhere measured at
-mature bars.
+mature bars. Flat (zero-loss) row pins 100, not NaN — see the
+[warm-up section](#warm-up-null-behavior) above.
 
 ### `atr(n)`
 
@@ -195,17 +307,64 @@ smoothing chain (span 5 / 3) aligns with TA-Lib's SMA-seeded `t_ema`,
 so both engines agree exactly at mature bars (verified cross-engine in
 `tests/test_rs_indicators.py`).
 
+## Installation extras
+
+scanlang ships extras that gate the two engines' indicator coverage:
+
+| Extra | Pulls | Indicator coverage |
+| --- | --- | --- |
+| (default) | polars >= 1.44 | The built-in (`sma`, `ema`, `rsi`, `atr`, etc.), `wma`/`dema`/`tema`/`trima`/`mom`/`midprice`/`cci`/`willr`/`trange`/`ad`, and the temporal `rs_*` — all **polars-native** builders. |
+| `duckdb` | `duckdb >= 1.5` | The duckdb backend and its full `SQL_INDICATORS` registry (superset of `INDICATORS`). The community talib extension is loaded by `apply_sql` itself; no Python install. |
+| `talib` | `ta-lib >= 0.7.1` | The eager parity seam for `adx`, `kama`, `macd`, `bbands_*`, `aroon`, `cdlengulfing`, and the curated candlestick set. Required for those names on the polars engine. |
+
+Install combinations:
+
+```sh
+uv add scanlang                      # polars-native only
+uv add 'scanlang[duckdb]'            # + duckdb backend
+uv add 'scanlang[talib]'             # + talib parity seam (polars)
+uv add 'scanlang[duckdb,talib]'      # both (full coverage)
+```
+
+On a talib-less interpreter, every registry entry is still
+**importable and validatable** (the seam builders import talib only
+when their `n` is bound); `apply()` reports the install hint with a
+`requires the optional 'talib' extra` error when a seam name is
+referenced. See `tests/test_talib_missing.py`.
+
 ## Extending
 
 See [Extend INDICATORS](../how-to/extend-indicators.md) for the full
 extension recipe, including arg-type rules, `.over(partition)`,
 `required_cols`, and idempotent registration.
 
-To add an indicator that only the duckdb backend can execute, insert
-into [`SQL_INDICATORS`](../reference/duckdb-backend.md) instead — same
-`(arg_spec, builder, required_cols)` shape, but the builder emits a
-SQL fragment. `validate(scan_def, engine="duckdb")` accepts the new
-name; the polars engine rejects it.
+For a **polars-only** indicator, insert into `INDICATORS`:
+
+```python
+from scanlang import INDICATORS
+
+def _stdev(e, n, partition):
+    return e.rolling_std(n).over(partition)
+
+if "stdev" not in INDICATORS:                 # idempotent
+    INDICATORS["stdev"] = (("expr", "int"), _stdev, ())
+```
+
+For a **duckdb-only** indicator (talib `t_*` extension-only function),
+insert into `SQL_INDICATORS` instead — same `(arg_spec, builder,
+required_cols)` shape, but the builder emits a SQL fragment. The
+duckdb engine validates it; the polars engine rejects it with
+`indicator '<name>' requires engine='duckdb'`. To also enable it on
+the polars engine, add an entry in `INDICATORS` with the **same
+`arg_spec` and `required_cols`** (the seam contract), and have the
+polars builder return a `DataFrame -> DataFrame` callable (the eager
+parity seam pattern). See
+[`scanlang/indicators.py:457`](https://github.com/legout/scanlang/blob/master/src/scanlang/indicators.py)
+for the `if "<name>" not in INDICATORS:` insertion pattern used by
+`adx` / `kama` / `macd` / `bbands_*` / `aroon` / the candlestick set.
+
+The full contract is part of the [IR freeze](../explanation/ir-design.md#indicators-and-engines)
+— the entry shape is the public extension point.
 
 ## Validation errors
 
@@ -225,3 +384,5 @@ name; the polars engine rejects it.
   `SQL_INDICATORS` shape and the two-tier lowering
 - [IR design](../explanation/ir-design.md) — the registry contract as
   part of the IR freeze
+- [`scripts/gen_indicator_availability.py`](https://github.com/legout/scanlang/blob/master/scripts/gen_indicator_availability.py)
+  — regenerates the availability table from the live registries

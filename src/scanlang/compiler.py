@@ -26,6 +26,7 @@ operands — dtype mismatches there surface at collect time.
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import operator
 from collections.abc import Callable
@@ -142,8 +143,8 @@ def _operand(spec, *, catalog: dict, partition: str) -> pl.Expr:
                 # talib parity builders (adx) return DataFrame -> DataFrame callables
                 # for group_by(partition, maintain_order=True).map_groups — eager
                 # only. apply() pre-stages the reserved ``__adx`` column; a bare
-                # compile() targets that column (single-use — apply() aliases
-                # repeated calls), so this still validates AND compiles.
+                # compile() targets that column (apply() compiles a rewritten
+                # deep copy of the scan def), so this still validates AND compiles.
                 return pl.col("__adx")
             return built
         key = next(k for k in spec if k in _ARITH)
@@ -404,7 +405,13 @@ def _compile_node(node, *, catalog: dict, partition: str) -> pl.Expr:
 
 
 def _eager_fn_nodes(nodes, found: list[dict]) -> None:
-    """Collect every ``{"fn": ...}`` operand dict into ``found`` (recursive)."""
+    """Collect every ``{"fn": ...}`` operand dict into ``found`` (recursive).
+
+    Walks exactly what ``_operand`` reaches: logical nodes (``all``/``any``/
+    ``not``), the filter's ``property`` and ``value`` operands, fn ``args``
+    and arithmetic trees — so ``apply()`` stages every eager builder the
+    compiled predicate can reference, in any operand position.
+    """
     for nd in nodes or []:
         if not isinstance(nd, dict):
             continue
@@ -413,13 +420,22 @@ def _eager_fn_nodes(nodes, found: list[dict]) -> None:
         elif "all" in nd or "any" in nd:
             _eager_fn_nodes(nd.get("all") or nd.get("any"), found)
         else:
-            prop = nd.get("property")
-            if isinstance(prop, dict):
-                if "fn" in prop:
-                    found.append(prop)
-                for a in prop.get("args") or []:
-                    if isinstance(a, dict) and "fn" in a:
-                        found.append(a)
+            _eager_fn_operands(nd.get("property"), found)
+            _eager_fn_operands(nd.get("value"), found)
+
+
+def _eager_fn_operands(spec, found: list[dict]) -> None:
+    """Collect ``{"fn": ...}`` operand dicts under one operand spec."""
+    if not isinstance(spec, dict):
+        return
+    if "fn" in spec:
+        found.append(spec)
+        args = spec.get("args") or []  # nested fn args recurse
+        for a in args:
+            _eager_fn_operands(a, found)
+    elif key := next((k for k in spec if k in _ARITH), None):
+        for a in spec[key]:
+            _eager_fn_operands(a, found)
 
 
 def compile(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, partition: str = "symbol", engine: str = "polars") -> pl.Expr:
@@ -503,12 +519,14 @@ def apply(frame: pl.DataFrame | pl.LazyFrame, scan_def: dict, *, catalog: dict =
         └────────┴───────┘
     """
     # talib parity indicators (adx: group_by(partition).map_groups) are
-    # eager-only — probe each fn's builder: a non-Expr return is the seam, so
-    # its column is pre-staged here and the predicate compiles against the
-    # materialized alias. A LazyFrame input cannot run the seam (no lazy
-    # map_groups), so it fails with the install hint instead.
-    fn_nodes: list[dict] = []
-    _eager_fn_nodes(scan_def.get("filters") or [], fn_nodes)
+    # eager-only — probe each fn's builder (the full operand grammar, via the
+    # deep copy below): a non-Expr return is the seam, so its column is
+    # pre-staged here and the predicate compiles against the materialized
+    # alias. A LazyFrame input cannot run the seam (no lazy map_groups), so
+    # it fails with the install hint instead.
+    staged_def = copy.deepcopy(scan_def)  # staging rewrites the copy's fn
+    fn_nodes: list[dict] = []  # dicts in place; the caller's scan_def stays intact
+    _eager_fn_nodes(staged_def.get("filters") or [], fn_nodes)
     eager: list[tuple[dict, Callable]] = []
     for prop in fn_nodes:
         entry = INDICATORS.get(prop["fn"])
@@ -538,7 +556,7 @@ def apply(frame: pl.DataFrame | pl.LazyFrame, scan_def: dict, *, catalog: dict =
         prop.clear()
         prop["col"] = alias
         cat[alias] = {"label": alias, "dtype": "float"}  # talib output is Float64
-    out = staged.filter(compile(scan_def, catalog=cat, partition=partition, engine=engine))
+    out = staged.filter(compile(staged_def, catalog=cat, partition=partition, engine=engine))
     order_by = scan_def.get("order_by") or []
     if order_by:
         keys = [ob["property"] for ob in order_by]

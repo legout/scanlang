@@ -7,6 +7,7 @@ skips when duckdb is not importable (the talib community extension is ensured
 by apply_sql itself).
 """
 
+import copy
 import datetime as dt
 import math
 
@@ -482,8 +483,25 @@ def test_adx_parity_two_partitions_warmup_and_cross_engine(con):
     # bare compile() targets the reserved staging column (apply() pre-stages __adx)
     assert compile(dict(d), catalog=cat).meta.root_names() == ["__adx"]
 
+    # warm-up pinned directly on the unstaged builder seam: exactly 2n-1 nulls
+    # per partition (NaN normalized to null) on the fixture
+    _, builder, _ = INDICATORS["adx"]
+    unstaged = (
+        df.group_by("symbol", maintain_order=True)
+        .map_groups(lambda g: builder(n, "symbol")(g))
+    )
+    assert unstaged["__adx"].null_count() == 3 * warmup
+    for sym in ("AAA", "BBB", "CCC"):
+        assert unstaged.filter(pl.col("symbol") == sym)["__adx"].null_count() == warmup
+    # and the mature region is provably positive here, so the >= 0 filter below
+    # keeps every mature bar (the count assertions are not vacuous)
+    assert unstaged.filter(pl.col("__adx").is_not_null())["__adx"].min() > 0
+
     # polars engine: apply() drives the map_groups builder over both partitions
-    pol = apply(df, d, catalog=cat)
+    d_reuse = {"filters": [{"property": {"fn": "adx", "args": [n]}, "op": ">=", "value": 0}]}
+    snapshot = copy.deepcopy(d_reuse)
+    pol = apply(df, d_reuse, catalog=cat)
+    assert d_reuse == snapshot  # apply() leaves the caller's scan_def untouched
     assert set(pol["symbol"]) == {"AAA", "BBB", "CCC"} and pol.height == 3 * (N - warmup)
 
     # warm-up: exactly 2n-1 hits per partition (null warm-up rows drop out of
@@ -495,10 +513,8 @@ def test_adx_parity_two_partitions_warmup_and_cross_engine(con):
            if v is not None}
     assert len(got) == 3 * (N - warmup)
 
-    # duckdb engine: same scan shape through t_adx (fresh dict — the polars
-    # apply leg rewrote `d`'s fn operand into the staged alias in place)
-    d_sql = {"filters": [{"property": {"fn": "adx", "args": [n]}, "op": ">=", "value": 0}]}
-    sql = apply_sql(con, d_sql, relation="bars", catalog=cat)
+    # duckdb engine: same scan dict through t_adx (apply() no longer rewrites it)
+    sql = apply_sql(con, d_reuse, relation="bars", catalog=cat)
     assert sql.height == 3 * (N - warmup)
     sql_vals = {(s, sess): v for s, sess, v in sql.select("symbol", "session", "c0").rows()}
     assert set(sql_vals) == set(got)  # identical mature hit sets (warm-up filtered identically)
@@ -514,3 +530,49 @@ def test_adx_parity_two_partitions_warmup_and_cross_engine(con):
         assert not math.isnan(r), (sym, sess)
         assert v == pytest.approx(float(r), abs=1e-9), (sym, sess, v, r)
         assert sql_vals[(sym, sess)] == pytest.approx(float(r), abs=1e-9), (sym, sess)
+
+
+def test_adx_staging_covers_full_operand_grammar():
+    """Staging regressions: value-position + arith-tree adx, scan_def reuse.
+
+    validate() accepts fn operands in value position and inside arithmetic
+    property trees (so does polars-native sma); apply()'s eager staging must
+    pre-stage every one of them — previously only top-level property fns were
+    staged, so the predicate referenced a never-materialized ``__adx`` — and
+    must not rewrite the caller's scan_def (a reused dict then fails with
+    ``unknown column: '__adx_0'``).
+    """
+    pytest.importorskip("talib")
+    df = _bars()
+    cat = catalog_from_schema(df)
+    fn = {"fn": "adx", "args": [14]}
+    mature = 3 * (N - 27)
+
+    # control: polars-native fn in value position already ran
+    ctrl = apply(df, {"filters": [{"property": "close", "op": ">",
+                                   "value": {"fn": "sma", "args": [{"col": "close"}, 20]}}]}, catalog=cat)
+    assert ctrl.height < 3 * N  # warm-up rows drop; the position itself works
+
+    # value position: adx > 0 side of close > adx (was: ColumnNotFoundError __adx)
+    d_val = {"filters": [{"property": "close", "op": ">", "value": dict(fn)}]}
+    assert validate(d_val, catalog=cat, engine="polars") == []
+    assert "__adx" in compile(dict(d_val), catalog=cat).meta.root_names()
+    hits = apply(df, d_val, catalog=cat)
+    assert hits.height <= mature  # warm-up nulls fail the predicate — no leakage
+    alias = next(c for c in hits.columns if c.startswith("__adx"))
+    assert hits[alias].null_count() == 0
+
+    # arithmetic property tree: adx - close > 0 (same staging gap)
+    d_arith = {"filters": [{"property": {"-": [dict(fn), {"col": "close"}]}, "op": ">", "value": 0}]}
+    assert validate(d_arith, catalog=cat) == []
+    hits2 = apply(df, d_arith, catalog=cat)
+    alias2 = next(c for c in hits2.columns if c.startswith("__adx"))
+    assert hits2[alias2].null_count() == 0 and hits2.height <= mature
+
+    # dict reuse: the same scan_def applies twice, byte-identical afterwards
+    d_twice = {"filters": [{"property": dict(fn), "op": ">=", "value": 0}]}
+    snapshot = copy.deepcopy(d_twice)
+    r1 = apply(df, d_twice, catalog=cat)
+    r2 = apply(df, d_twice, catalog=cat)  # was: ValueError unknown column '__adx_0'
+    assert d_twice == snapshot
+    assert r1.equals(r2)

@@ -51,7 +51,6 @@ from scanlang.duckdb_sql import SQL_INDICATORS as SQL_REG
 # hand-list for the two-step-window (`adr`) and the list-CTE multi-output
 # functions. Everything else in the `t_*` tier uses the per-partition
 # list CTE with unnest. Anything not in this dict defaults to "t_*".
-_NATIVE = frozenset(("sma", "rmin", "rmax", "shift"))
 _TIER: dict[str, str] = {
     "sma": "native window",
     "rmin": "native window",

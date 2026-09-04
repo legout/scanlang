@@ -77,6 +77,52 @@ def _slope(e, n: int, partition: str) -> pl.Expr:
     return (s_xy - (n - 1) / 2 * s_y) / s_xx
 
 
+# Temporal z-score normalization (IBD-style RS presentation — see
+# docs/stock-screener-learnings.md item 2). RS ratings are already
+# cross-sectional percentiles, so each series is z-scored against its OWN
+# trailing history and re-centered at 100 (scale 5, clamped to [80, 120]).
+# Warm-up is null until ``n`` smoothed values exist (a sub-window z would
+# drift with series length); a zero-variance window pins 100.0. The eps
+# branch must be an explicit ``when``: on a null cond (rolling_std warm-up)
+# when/otherwise takes the otherwise branch, which divides nulls by null —
+# null either way, but ordering the eps check first keeps the flat case
+# exact. The clamp wraps ``100 + 5z`` directly; clip on null is null, which
+# is the warm-up contract.
+_RS_SPAN = 5  # EMA span smoothing the raw series (ratio leg)
+_RS_MOM_LOOKBACK = 4  # ROC lookback feeding the momentum leg
+_RS_MOM_SPAN = 3  # EMA span smoothing the momentum ROC
+_RS_SCALE = 5.0  # ±2σ ≈ the conventional 90..110 RRG band
+_RS_EPS = 1e-6  # zero-variance guard
+
+
+def _zscore(e: pl.Expr, n: int, partition: str) -> pl.Expr:
+    """Trailing population z-score of ``e``, re-centered at 100 and clamped.
+
+    Null until ``n`` values exist (a short sub-window z would drift with
+    series length — the count guard is what makes the warm-up contract match
+    the SQL engine's); flat window -> 100.0. Chained ``.over(partition)``
+    windows each evaluate against the partition's rows.
+    """
+    sd = e.rolling_std(n, ddof=0).over(partition)
+    z = pl.when(sd < _RS_EPS).then(0.0).otherwise((e - e.rolling_mean(n).over(partition)) / sd)
+    return pl.when(sd.is_not_null()).then((100.0 + _RS_SCALE * z).clip(80.0, 120.0)).otherwise(None)
+
+
+def _rs_ratio(e: pl.Expr, n: int, partition: str) -> pl.Expr:
+    """rs_ratio: EMA(_RS_SPAN) of the series, then a trailing ``n`` z-score."""
+    return _zscore(e.ewm_mean(span=_RS_SPAN, adjust=False).over(partition), n, partition)
+
+
+def _rs_momentum(e: pl.Expr, n: int, partition: str) -> pl.Expr:
+    """rs_momentum: ROC(_RS_MOM_LOOKBACK) -> EMA(_RS_MOM_SPAN), then z-score.
+
+    Feed it the normalized ratio — ``rs_momentum(rs_ratio(rs, 26), 13)`` — the
+    reference pipeline differences the *normalized* series, not the raw one.
+    """
+    roc = e.diff(_RS_MOM_LOOKBACK).over(partition).ewm_mean(span=_RS_MOM_SPAN, adjust=False).over(partition)
+    return _zscore(roc, n, partition)
+
+
 # name -> (arg_spec, builder, required_cols)
 #
 # Extend by inserting entries; the entry shape is the contract. See
@@ -131,6 +177,8 @@ INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
         lambda e, n, partition: e.shift(n).over(partition),
         (),
     ),
+    "rs_ratio": (("expr", "int"), _rs_ratio, ()),
+    "rs_momentum": (("expr", "int"), _rs_momentum, ()),
 }
 
 """Indicator registry: the ``{"fn": name}`` operand extension point.

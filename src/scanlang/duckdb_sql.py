@@ -68,6 +68,7 @@ from collections.abc import Callable
 import polars as pl
 
 from scanlang.compiler import PROPERTY_CATALOG, _collect
+from scanlang.indicators import _RS_MOM_LOOKBACK, _RS_MOM_SPAN, _RS_SPAN
 
 __all__ = ["SQL_INDICATORS", "apply_sql", "compile_sql"]
 
@@ -240,6 +241,53 @@ def _adr_tr(p: str, o: str, params: list) -> str:
     )
 
 
+# Temporal z-score normalization (rs_ratio / rs_momentum) — polars builders
+# live in scanlang.indicators (_RS_* constants). Each emits TWO stages via
+# ``_Gen._emit_rs`` (see its docstring for the probed duckdb constraints):
+# stage A (list tier) smooths warm-up-safe, stage B (window tier) z-scores.
+def _rs_smooth(span: int) -> str:
+    """Stage-A smoothing over the fixed aliases _rs_r (raw) / _rs_nn (stripped).
+
+    ``t_ema`` reads NULLs as zero and seeds from the first input, so the null
+    warm-up prefix is stripped before the call and re-padded by PREPENDING
+    the counted nulls (list_resize pads at the tail, which would shift the
+    series). The empty-list CASE guards a talib internal error on ``t_ema([])``.
+    """
+    return (
+        "CASE WHEN len(_rs_nn) = 0 THEN list_resize(CAST([NULL] AS DOUBLE[]), len(_rs_r)) "
+        f"ELSE list_concat(list_resize(CAST([NULL] AS DOUBLE[]), len(_rs_r) - len(_rs_nn)), "
+        f"t_ema(_rs_nn, {span})) END"
+    )
+
+
+def _rs_z(col: str, n: int, p: str, o: str) -> str:
+    """Stage-B z-score of ``col``: trailing population z, re-center 100, clamp.
+
+    The clamp sits INSIDE the CASE — duckdb greatest/least SKIP NULLs, so a
+    clamp wrapped around the CASE would turn the warm-up NULL into 80.0.
+    Literals, not bound params: the binder drops bare ``?`` params in window
+    frames when other CAST(?) params exist (probed duckdb 1.5.5).
+    """
+    w = f"PARTITION BY {_q(p)} ORDER BY {_q(o)} ROWS BETWEEN {n - 1} PRECEDING AND CURRENT ROW"
+    return (
+        f"CASE WHEN count({_q(col)}) OVER ({w}) < {n} THEN NULL "
+        f"WHEN stddev_pop({_q(col)}) OVER ({w}) < 1e-06 THEN 100.0 "
+        f"ELSE greatest(80.0, least(120.0, 100.0 + 5.0 * ({_q(col)} - avg({_q(col)}) OVER ({w})) "
+        f"/ stddev_pop({_q(col)}) OVER ({w}))) END"
+    )
+
+
+def _rs_smooth_router(x, n, p, o, params):
+    """Placeholder — ``rs_ratio``/``rs_momentum`` lower via ``_Gen._emit_rs``.
+
+    ``fn()`` special-cases these names BEFORE dispatching to the registry
+    builder (the stage-A list CTE needs the operand fragment plus a deeper
+    SELECT nest), so this is never invoked; it exists only so the registry
+    entry keeps the standard 3-tuple shape.
+    """
+    raise NotImplementedError("rs_* lower via _Gen._emit_rs")  # pragma: no cover
+
+
 # name -> (arg_spec, sql_builder, required_cols) — mirrors INDICATORS' contract.
 # The entry shape is the extension point for the SQL engine.
 #
@@ -271,6 +319,9 @@ SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "aroon": (("int",), _aroon, ("high", "low")),
     "cdlengulfing": (("int",), _cdlengulfing, ("open", "high", "low", "close")),
     "ht_trendline": (("int",), _ht_trendline, ("close",)),
+    # temporal z-score RS normalization (special two-stage lowering in fn())
+    "rs_ratio": (("expr", "int"), _rs_smooth_router, ()),
+    "rs_momentum": (("expr", "int"), _rs_smooth_router, ()),
 }
 
 """SQL indicator registry: the ``{"fn": name}`` lowering table for this module.
@@ -419,6 +470,87 @@ class _Gen:
 
         self.pending.append(emit)
 
+    def _emit_rs(self, x: str, name: str, n: int, alias: str) -> None:
+        """rs_ratio/rs_momentum: list-tier smoothing CTE + window-tier z CTE.
+
+        ``x`` (the operand fragment) is never None here — arg_spec is
+        ``("expr", "int")`` and validate() guarantees both args. It renders
+        ONCE, inner (its base/alias columns are only visible there), as
+        ``list(x ORDER BY o) AS _rs_r``. Stage A mirrors ``_emit_t``
+        (deferred; reads ``self.cols``/``self.computed`` at flush time) but
+        nests the projection one SELECT deeper: the smoothing chain (_rs_nn
+        strip -> t_ema -> null re-pad) consumes the aliases via duckdb's
+        lateral same-SELECT-list resolution, and ``_rs_r`` itself rides
+        outward through an extra unnest when ``x`` references an alias
+        (rs_momentum over rs_ratio) so later CTEs keep seeing it. Stage B is
+        the plain window CTE (count-guard warm-up NULLs, population std, eps
+        pin, inside-the-CASE clamp).
+        """
+        smooth = _rs_smooth(_RS_SPAN)
+        strip = "list_filter(_rs_r, y -> y IS NOT NULL) AS _rs_nn"
+        if name == "rs_momentum":
+            # t_mom zero-seeds its warm-up AND reads NULL inputs as zero, so
+            # every slot gates on the source value n bars back existing.
+            smooth = (
+                f"list_transform(t_mom(_rs_r, {_RS_MOM_LOOKBACK}), (m, i) -> "
+                f"CASE WHEN list_extract(_rs_r, i + 1 - {_RS_MOM_LOOKBACK}) IS NULL "
+                f'THEN NULL ELSE m END) AS _rs_r2, '
+                f"list_filter(_rs_r2, y -> y IS NOT NULL) AS _rs_n2, "
+                + _rs_smooth(_RS_MOM_SPAN).replace("_rs_nn", "_rs_n2").replace("_rs_r", "_rs_r2")
+            )
+            strip = ""
+
+        def emit() -> None:
+            bases = sorted(self.cols - {self.p, self.o})
+            inner0 = [f"list({_q(c)} ORDER BY {_q(self.o)}) AS _b{i}" for i, c in enumerate(bases)]
+            outer0 = [f"unnest(_b{i}) AS {_q(c)}" for i, c in enumerate(bases)]
+            inner0.append(f"list({_q(self.o)} ORDER BY {_q(self.o)}) AS _o")
+            # operand fragment renders ONCE, inner (base columns live there)
+            inner0.append(f"list({x} ORDER BY {_q(self.o)}) AS _rs_r")
+            for i, a in enumerate(self.computed):
+                inner0.append(f"list({_q(a)} ORDER BY {_q(self.o)}) AS _c{i}")
+                outer0.append(f"unnest(_c{i}) AS {_q(a)}")
+            # _rs_r rides outward too: harmless for base-column operands, and
+            # alias operands (rs_momentum over rs_ratio) stay visible later
+            outer0.append("unnest(_rs_r) AS _rs_r")
+            self.stage += 1
+            name_a = f"s{self.stage}"
+            # the middle carries, as PLAIN refs, everything the outer unnests
+            # (lateral refs don't span nesting levels): _o, _b{i}, _rs_r —
+            # plus strip's _rs_nn, consumed by smooth at this level
+            mid = ", ".join(["_o"] + [f"_b{i}" for i in range(len(bases))] + ["_rs_r"])
+            carry = ", ".join(f"_c{i}" for i in range(len(self.computed)))
+            if carry:
+                mid += f", {carry}"
+            if strip:
+                mid += f", {strip}"
+            self.ctes.append(
+                f"{name_a} AS (SELECT {_q(self.p)}, unnest(_o) AS {_q(self.o)}, {', '.join(outer0)}, "
+                f"unnest(_v0) AS {alias} "
+                f"FROM (SELECT {_q(self.p)}, {mid}, {smooth} AS _v0 "
+                f"FROM (SELECT {_q(self.p)}, "
+                f"{', '.join(inner0)} "
+                f"FROM {self.prev} GROUP BY {_q(self.p)})))"
+            )
+            self.prev = name_a
+            self.computed.append(alias)
+            self.stage += 1
+            name_b = f"s{self.stage}"
+            # stage B: plain window CTE. Replaces the pre-z column outright
+            # (a second ``AS alias`` would produce a c0_1 duplicate and the
+            # WHERE would bind the pre-z column) and CARRIES every other base
+            # column/alias forward — later CTEs and the WHERE bind against the
+            # last CTE, so a projecting stage B breaks rs_momentum over
+            # rs_ratio (its stage A re-lists ``rs``/``c0``).
+            keep = sorted(self.cols - {self.p, self.o}) + [a for a in self.computed if a != alias]
+            sel = [_q(self.p), _q(self.o)] + [_q(c) for c in keep] + [
+                f"{_rs_z(alias, n, self.p, self.o)} AS {alias}"
+            ]
+            self.ctes.append(f"{name_b} AS (SELECT {', '.join(sel)} FROM {self.prev})")
+            self.prev = name_b
+
+        self.pending.append(emit)
+
     def _emit_x(self, lhs: str, rhs: str, xa: str, xb: str, la: str, lb: str) -> None:
         """Cross CTE: materialize both operands, then lag the columns.
 
@@ -472,6 +604,14 @@ class _Gen:
                 else:
                     pos.append(self.operand(a))
             alias = f"c{self.n}"
+            if name in ("rs_ratio", "rs_momentum"):
+                # two-stage lowering: list-tier smoothing (nested projection —
+                # the operand fragment must render once, under its own alias)
+                # + window-tier z. Consumes pos[0] directly; the builder slot
+                # in the registry is a placeholder that is never called.
+                self._emit_rs(pos[0] if pos else None, name, n, alias)
+                self.n += 1
+                return alias
             expr = builder(pos[0] if pos else None, n, self.p, self.o, self.params)
         finally:
             self.sink = outer_sink

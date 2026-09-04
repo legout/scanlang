@@ -26,6 +26,7 @@ which is a strict superset of `INDICATORS`.
 | `roc` | yes | yes | talib `t_roc` |
 | `natr` | yes | yes | talib `t_natr` |
 | `slope` | yes | yes | talib `t_linearreg_slope` |
+| `rs_ratio`, `rs_momentum` | yes | yes | list-tier `t_ema`/`t_mom` + window-tier z (exact) |
 | `macd` | — | yes | talib `t_macd` (narrowed to the MACD line) |
 | `bbands_upper`, `bbands_lower` | — | yes | talib `t_bbands` (two entries; middle band is `sma`) |
 | `adx` | — | yes | talib `t_adx` |
@@ -58,6 +59,8 @@ for mature-bar scans.
 | `rmin` | `(expr, n)` | — | rolling min over partition |
 | `rmax` | `(expr, n)` | — | rolling max over partition |
 | `shift` | `(expr, n)` | — | shift over partition |
+| `rs_ratio` | `(expr, n)` | — | trailing z of EMA(5) of `expr`, re-centered at 100 |
+| `rs_momentum` | `(expr, n)` | — | trailing z of EMA(3) of the 4-bar ROC of `expr`, re-centered at 100 |
 
 ### `sma(expr, n)`
 
@@ -162,6 +165,25 @@ Rolling min / max over the partition.
 `e.shift(n).over(partition)`. Used internally by the text DSL for the
 postfix `[n]` syntax (`close[1]`) and the column-call syntax
 (`close(1)`).
+
+### `rs_ratio(expr, n)` / `rs_momentum(expr, n)`
+
+```python
+{"fn": "rs_ratio", "args": [{"col": "rs"}, 26]}
+{"fn": "rs_momentum", "args": [{"fn": "rs_ratio", "args": [{"col": "rs"}, 26]}, 13]}
+```
+
+Temporal z-score normalization for RS ratings (IBD-style presentation).
+RS ratings are already cross-sectional percentiles, so each series is
+z-scored against its OWN trailing history: a trailing population z over
+`n` smoothed values, re-centered at 100 (scale 5), clamped to
+[80, 120]. `rs_ratio` smooths with EMA(5); `rs_momentum` takes the
+4-bar ROC of the *normalized* ratio (feed it `rs_ratio` output, as
+above) and smooths with EMA(3). Warm-up: null until the first `n`
+smoothed values exist; a zero-variance window pins exactly 100.0. The
+smoothing chain (span 5 / 3) aligns with TA-Lib's SMA-seeded `t_ema`,
+so both engines agree exactly at mature bars (verified cross-engine in
+`tests/test_rs_indicators.py`).
 
 ## Extending
 

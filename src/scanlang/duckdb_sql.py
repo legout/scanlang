@@ -34,13 +34,17 @@ stays polars-only):
   ``macd`` (the MACD line), ``bbands_upper``/``bbands_lower`` (two entries —
   bands are scanned as thresholds; the middle band is just ``sma``),
   ``aroon`` (the up line), ``cdlengulfing`` (0/1 talib integer),
-  ``ht_trendline``. Multi-output ``t_*`` functions return lists of structs;
+  ``ht_trendline``, and ``stoch_k``/``stoch_d`` (the slow %K/%D lines —
+  the first ``("int", "int", "int")`` arg_spec: fast-k, slow-k, slow-d
+  periods; ma_type slots stay at the talib default 0). Multi-output
+  ``t_*`` functions return lists of structs;
   the builders narrow them to one struct field in SQL.
   [`validate(..., engine="duckdb")`](api.md#scanlang.compiler.validate)
-  accepts these names — the polars engine rejects them. ``adx`` is the one
-  dual-engine name: its ``t_adx`` lowering lives here AND an exact TA-Lib
-  parity builder is registered in ``INDICATORS`` (the ``talib`` extra,
-  group_by/map_groups seam), so it validates and executes on both engines.
+  accepts these names — the polars engine rejects them. ``adx`` and
+  ``kama`` are dual-engine names: their ``t_adx``/``t_kama`` lowerings
+  live here AND exact TA-Lib parity builders are registered in
+  ``INDICATORS`` (the ``talib`` extra, group_by/map_groups seam), so they
+  validate and execute on both engines.
 
 Nested computed operands (``sma(rsi(close, 14), 5)``) stage as successive
 row-aligned CTEs — one column per indicator call. The probe answer
@@ -192,6 +196,24 @@ def _aroon(x, n: int, p: str, o: str, params: list) -> str:
     )
 
 
+def _stoch(side: str):
+    def build(x, n, p: str, o: str, params: list) -> str:
+        # n = (fastk, slowk, slowd); ma_type slots stay at talib default 0.
+        # fn() passes n as a list for multi-tag arg_specs (see the compiler).
+        fastk, slowk, slowd = n
+        params.extend((fastk, slowk, 0, slowd, 0))
+        cols = (f"list({_q(c)} ORDER BY {_q(o)})" for c in ("high", "low", "close"))
+        return (
+            f"{{'{side}': unnest(t_stoch("
+            f"{', '.join(cols)}, "
+            "CAST(? AS INTEGER), CAST(? AS INTEGER), CAST(? AS INTEGER), "
+            "CAST(? AS INTEGER), CAST(? AS INTEGER)))"
+            f"['{side}']}}"
+        )
+
+    return build
+
+
 def _raw_tfn(list_frag: str) -> str:
     """Raw ``t_*`` call inside a ``{'field': ...}`` list_frag (for the inner alias)."""
     i = list_frag.index("unnest(") + len("unnest(")
@@ -208,6 +230,10 @@ def _raw_field(list_frag: str) -> str:
 
 def _adx(x, n: int, p: str, o: str, params: list) -> str:
     return _tcol("t_adx", n, p, o, params, ("high", "low", "close"))
+
+
+def _kama(x, n: int, p: str, o: str, params: list) -> str:
+    return _tcol("t_kama", n, p, o, params, ("close",))
 
 
 def _cdlengulfing(x, n, p: str, o: str, params: list) -> str:
@@ -294,16 +320,18 @@ def _rs_smooth_router(x, n, p, o, params):
 # name -> (arg_spec, sql_builder, required_cols) — mirrors INDICATORS' contract.
 # The entry shape is the extension point for the SQL engine.
 #
-# duckdb-only entries (macd, bbands, aroon, cdlengulfing, ht_trendline)
-# have no polars builder: validate(engine="duckdb") accepts them, the polars
-# engine rejects them. ``adx`` is dual-engine — it ALSO has an INDICATORS
-# parity builder (the talib extra's map_groups seam, exact TA-Lib values).
+# duckdb-only entries (macd, bbands, aroon, cdlengulfing, ht_trendline,
+# stoch_k/stoch_d) have no polars builder: validate(engine="duckdb")
+# accepts them, the polars engine rejects them. ``adx`` and ``kama`` are
+# dual-engine — they ALSO have INDICATORS parity builders (the talib
+# extra's map_groups seam, exact TA-Lib values).
 # Multi-output t_* functions are narrowed to one series
 # at the SQL level: macd -> the MACD line (fast EMA - slow EMA, the
 # conventional "MACD" value; signal/hist are derived from it), bbands ->
 # upper AND lower as two entries (bands are scanned as thresholds; no single
 # "primary" band), aroon -> aroon_up (the trend-strength signal; aroon_down
-# is its mirror for short setups, add as its own entry if ever needed).
+# is its mirror for short setups, add as its own entry if ever needed),
+# stoch -> slowk AND slowd as two entries (stoch_k/stoch_d).
 SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "sma": (("expr", "int"), lambda x, n, p, o, pa: _win(x, n, p, o, pa, "AVG"), ()),
     "rmin": (("expr", "int"), lambda x, n, p, o, pa: _win(x, n, p, o, pa, "MIN"), ()),
@@ -316,6 +344,19 @@ SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "roc": (("expr", "int"), _roc, ()),
     "natr": (("expr", "int"), _natr, ("high", "low", "close")),
     "slope": (("expr", "int"), _slope_sql, ()),
+    # --- 0.4.0 single-output TA-Lib parity set (mirrors the INDICATORS entries) ---
+    "wma": (("expr", "int"), lambda x, n, p, o, pa: _tcall("t_wma", x, n, o, pa), ()),
+    "dema": (("expr", "int"), lambda x, n, p, o, pa: _tcall("t_dema", x, n, o, pa), ()),
+    "tema": (("expr", "int"), lambda x, n, p, o, pa: _tcall("t_tema", x, n, o, pa), ()),
+    "trima": (("expr", "int"), lambda x, n, p, o, pa: _tcall("t_trima", x, n, o, pa), ()),
+    "mom": (("expr", "int"), lambda x, n, p, o, pa: _tcall("t_mom", x, n, o, pa), ()),
+    "midprice": (("int",), lambda x, n, p, o, pa: _tcol("t_midprice", n, p, o, pa, ("high", "low")), ("high", "low")),
+    "cci": (("int",), lambda x, n, p, o, pa: _tcol("t_cci", n, p, o, pa, ("high", "low", "close")), ("high", "low", "close")),
+    "willr": (("int",), lambda x, n, p, o, pa: _tcol("t_willr", n, p, o, pa, ("high", "low", "close")), ("high", "low", "close")),
+    # dummy-int precedent (ht_trendline): t_trange takes no period; n is ignored
+    "trange": (("int",), lambda x, n, p, o, pa: _tcol("t_trange", None, p, o, pa, ("high", "low", "close")), ("high", "low", "close")),
+    "ad": ((), lambda x, n, p, o, pa: _tcol("t_ad", None, p, o, pa, ("high", "low", "close", "volume")), ("high", "low", "close", "volume")),
+    "kama": (("int",), _kama, ("close",)),
     # duckdb-only (talib extension): not in INDICATORS
     "macd": (("int",), _macd, ("close",)),
     "bbands_upper": (("int",), _bband("upper"), ("close",)),
@@ -324,6 +365,8 @@ SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "aroon": (("int",), _aroon, ("high", "low")),
     "cdlengulfing": (("int",), _cdlengulfing, ("open", "high", "low", "close")),
     "ht_trendline": (("int",), _ht_trendline, ("close",)),
+    "stoch_k": (("int", "int", "int"), _stoch("slowk"), ("high", "low", "close")),
+    "stoch_d": (("int", "int", "int"), _stoch("slowd"), ("high", "low", "close")),
     # temporal z-score RS normalization (special two-stage lowering in fn())
     "rs_ratio": (("expr", "int"), _rs_smooth_router, ()),
     "rs_momentum": (("expr", "int"), _rs_smooth_router, ()),
@@ -338,15 +381,15 @@ take ``(x, n, partition, order_column, params)``. Extend by insertion —
 
 This registry is a superset of ``INDICATORS``: the talib-only names
 ``macd``, ``bbands_upper``, ``bbands_lower``, ``aroon``,
-``cdlengulfing``, and ``ht_trendline`` exist here and nowhere in
-``INDICATORS`` — they run only on the duckdb engine (the community talib
-extension provides the ``t_*`` functions).
+``cdlengulfing``, ``ht_trendline``, ``stoch_k``, and ``stoch_d`` exist
+here and nowhere in ``INDICATORS`` — they run only on the duckdb engine
+(the community talib extension provides the ``t_*`` functions).
 [``validate(..., engine="duckdb")``](api.md#scanlang.compiler.validate)
 accepts them; the polars engine rejects them with
 ``indicator 'aroon' requires engine='duckdb'``. All other names mirror an
-``INDICATORS`` entry 1:1 (same arg_spec, same required_cols) — ``adx``
-included, via its dual-engine INDICATORS parity builder (the ``talib``
-extra's group_by/map_groups seam).
+``INDICATORS`` entry 1:1 (same arg_spec, same required_cols) — ``adx`` and
+``kama`` included, via their dual-engine INDICATORS parity builders (the
+``talib`` extra's group_by/map_groups seam).
 """
 
 
@@ -602,21 +645,23 @@ class _Gen:
         name = spec["fn"]
         arg_spec, builder, req = SQL_INDICATORS[name]
         self.cols.update(req)
-        pos, n = [], None
+        pos = []
+        ints: list[int] = []
         outer_sink, self.sink = self.sink, self.params  # fn args render in CTE text
         try:
             for tag, a in zip(arg_spec, spec["args"]):
                 if tag == "int":
-                    n = a
+                    ints.append(a)
                 else:
                     pos.append(self.operand(a))
+            n = ints[0] if len(ints) == 1 else tuple(ints)
             alias = f"c{self.n}"
             if name in ("rs_ratio", "rs_momentum"):
                 # two-stage lowering: list-tier smoothing (nested projection —
                 # the operand fragment must render once, under its own alias)
                 # + window-tier z. Consumes pos[0] directly; the builder slot
                 # in the registry is a placeholder that is never called.
-                self._emit_rs(pos[0] if pos else None, name, n, alias)
+                self._emit_rs(pos[0] if pos else None, name, ints[0], alias)
                 self.n += 1
                 return alias
             expr = builder(pos[0] if pos else None, n, self.p, self.o, self.params)

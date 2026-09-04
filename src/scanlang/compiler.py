@@ -126,11 +126,28 @@ def _operand(spec, *, catalog: dict, partition: str) -> pl.Expr:
         if "col" in spec:
             return pl.col(spec["col"])
         if "fn" in spec:
-            arg_spec, builder, _req = INDICATORS[spec["fn"]]
-            parsed = [
-                a if tag == "int" else _operand(a, catalog=catalog, partition=partition)
-                for tag, a in zip(arg_spec, spec["args"])
-            ]
+            entry = INDICATORS.get(spec["fn"])
+            if entry is None:
+                # validated only under engine="duckdb" (SQL_INDICATORS name):
+                # the polars compiler has no lowering for it — compile_sql/apply_sql
+                raise ValueError(
+                    f"indicator {spec['fn']!r} is SQL-only — compile()/apply() lower "
+                    "polars predicates; use compile_sql()/apply_sql()"
+                )
+            arg_spec, builder, _req = entry
+            if sum(tag == "int" for tag in arg_spec) > 1:
+                # multiple int slots (stoch_k/stoch_d): the builder gets one
+                # list of all of them in place of the individual ints
+                ints = [a for tag, a in zip(arg_spec, spec["args"]) if tag == "int"]
+                parsed = [
+                    ints if tag == "int" else _operand(a, catalog=catalog, partition=partition)
+                    for tag, a in zip(arg_spec, spec["args"])
+                ]
+            else:
+                parsed = [
+                    a if tag == "int" else _operand(a, catalog=catalog, partition=partition)
+                    for tag, a in zip(arg_spec, spec["args"])
+                ]
             try:
                 built = builder(*parsed, partition=partition)
             except ImportError as e:
@@ -326,12 +343,13 @@ def validate(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, engine: str = 
     With ``engine="duckdb"`` indicator names that exist only in
     ``scanlang.duckdb_sql.SQL_INDICATORS`` (``macd``, ``bbands_upper``,
     ``bbands_lower``, ``aroon``, ``cdlengulfing``,
-    ``ht_trendline``) validate OK; under the default ``engine="polars"``
-    they produce ``indicator 'aroon' requires engine='duckdb'``.
-    ``adx`` is dual-engine: it has an ``INDICATORS`` parity builder (the
-    ``talib`` extra, applied via group_by/map_groups over the partition)
-    as well as the ``SQL_INDICATORS`` ``t_adx`` lowering, so it validates
-    under both engines without the duckdb-only error.
+    ``ht_trendline``, ``stoch_k``, ``stoch_d``) validate OK; under the
+    default ``engine="polars"`` they produce ``indicator 'aroon' requires
+    engine='duckdb'``. ``adx`` and ``kama`` are dual-engine: they have
+    ``INDICATORS`` parity builders (the ``talib`` extra, applied via
+    group_by/map_groups over the partition) as well as ``SQL_INDICATORS``
+    ``t_adx``/``t_kama`` lowerings, so they validate under both engines
+    without the duckdb-only error.
 
     Args:
         scan_def: A scan-def dict (``{"filters": [...], "order_by": ...,
@@ -534,8 +552,17 @@ def apply(frame: pl.DataFrame | pl.LazyFrame, scan_def: dict, *, catalog: dict =
             continue  # unknown fn — compile() raises the real error
         arg_spec, builder, _req = entry
         try:
-            built = builder(*(a if tag == "int" else pl.col("_")
-                              for tag, a in zip(arg_spec, prop["args"])), partition=partition)
+            if sum(tag == "int" for tag in arg_spec) > 1:  # stoch_k/stoch_d: tuple of ints
+                ints = [a for tag, a in zip(arg_spec, prop["args"]) if tag == "int"]
+                built = builder(
+                    *(ints if tag == "int" else pl.col("_") for tag, a in zip(arg_spec, prop["args"])),
+                    partition=partition,
+                )
+            else:
+                built = builder(
+                    *(a if tag == "int" else pl.col("_") for tag, a in zip(arg_spec, prop["args"])),
+                    partition=partition,
+                )
         except ImportError:
             continue  # missing talib extra — compile() reports the install hint
         if not isinstance(built, pl.Expr):
@@ -548,7 +575,7 @@ def apply(frame: pl.DataFrame | pl.LazyFrame, scan_def: dict, *, catalog: dict =
     staged = frame
     cat = dict(catalog)
     for j, (prop, apply_fn) in enumerate(eager):
-        alias = f"__adx_{j}" if prop["fn"] == "adx" else f"__{prop['fn']}_{j}"
+        alias = f"__{prop['fn']}_{j}"
         staged = (
             staged.group_by(partition, maintain_order=True)
             .map_groups(lambda g, fn=apply_fn, a=alias: fn(g).rename({"__adx": a}))

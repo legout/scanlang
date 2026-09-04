@@ -127,6 +127,84 @@ def _rs_momentum(e: pl.Expr, n: int, partition: str) -> pl.Expr:
     return _zscore(roc, n, partition)
 
 
+def _ema(e: pl.Expr, n: int, partition: str) -> pl.Expr:
+    return e.ewm_mean(span=n, adjust=False).over(partition)
+
+
+def _wma(e: pl.Expr, n: int, partition: str) -> pl.Expr:
+    """talib WMA (weights 1..n) via the same rolling-sum index trick as ``_slope``."""
+    r = pl.int_range(0, pl.len()).cast(pl.Float64)
+    s_y = e.rolling_sum(n).over(partition)
+    s_ry = (r * e).rolling_sum(n).over(partition)
+    return (s_ry - (r - n).over(partition) * s_y) / (n * (n + 1) / 2)
+
+
+def _dema(e: pl.Expr, n: int, partition: str) -> pl.Expr:
+    e1 = _ema(e, n, partition)
+    return 2 * e1 - _ema(e1, n, partition)
+
+
+def _tema(e: pl.Expr, n: int, partition: str) -> pl.Expr:
+    e1 = _ema(e, n, partition)
+    e2 = _ema(e1, n, partition)
+    return 3 * e1 - 3 * e2 + _ema(e2, n, partition)
+
+
+def _trima(e: pl.Expr, n: int, partition: str) -> pl.Expr:
+    """talib TRIMA: SMA of SMA with the talib fold a=(n+1)//2, b=n-a+1.
+
+    Even n: rolling_mean((n+1)//2) first would emit a null at bar (n+1)//2 - 1
+    one row earlier than the b-first fold, shifting the whole chain by one —
+    hence a on the *inner* window is what matches talib's SMA(n-a+1, n-a/2)
+    order (probed exact for both parities at 1e-13).
+    """
+    a = (n + 1) // 2
+    b = n - a + 1
+    return e.rolling_mean(a).over(partition).rolling_mean(b).over(partition)
+
+
+def _mom(e: pl.Expr, n: int, partition: str) -> pl.Expr:
+    return e - e.shift(n).over(partition)
+
+
+def _midprice(n: int, partition: str) -> pl.Expr:
+    return (
+        pl.col("high").rolling_max(n).over(partition)
+        + pl.col("low").rolling_min(n).over(partition)
+    ) / 2
+
+
+def _cci(n: int, partition: str) -> pl.Expr:
+    tp = (pl.col("high") + pl.col("low") + pl.col("close")) / 3
+    return (tp - tp.rolling_mean(n).over(partition)) / (
+        0.015 * tp.rolling_std(n, ddof=0).over(partition)
+    )
+
+
+def _willr(n: int, partition: str) -> pl.Expr:
+    hh = pl.col("high").rolling_max(n).over(partition)
+    ll = pl.col("low").rolling_min(n).over(partition)
+    return -100 * (hh - pl.col("close")) / (hh - ll)
+
+
+def _trange(n: int, partition: str) -> pl.Expr:
+    pc = pl.col("close").shift(1).over(partition)
+    tr = pl.max_horizontal(
+        pl.col("high") - pl.col("low"), (pl.col("high") - pc).abs(), (pc - pl.col("low")).abs()
+    )
+    # bar 0 must be null, not max_horizontal's h-l fallback (talib TRANGE nulls it)
+    return pl.when(pc.is_not_null()).then(tr).otherwise(None)
+
+
+def _ad(_n=None, partition: str = "symbol") -> pl.Expr:
+    # `_n` is always None: ad is the one periodless entry (empty arg_spec),
+    # but the builder keeps a (n, partition)-compatible call shape
+    clv = ((pl.col("close") - pl.col("low")) - (pl.col("high") - pl.col("close"))) / (
+        pl.col("high") - pl.col("low")
+    )
+    return (clv * pl.col("volume")).cum_sum().over(partition)
+
+
 def _adx(n: int, partition: str):
     """talib ADX per partition via the group_by/map_groups seam (0.4.0 parity plan).
 
@@ -142,6 +220,22 @@ def _adx(n: int, partition: str):
         )
         # reserved "__adx" output name — apply() renames it to a unique alias
         # (a user column literally named "adx" must not be clobbered)
+        return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
+
+    return _apply
+
+
+def _kama(n: int, partition: str):
+    """talib KAMA per partition via the same group_by/map_groups seam as ``_adx``.
+
+    KAMA's adaptive filtering ratio has no exact polars-native expression;
+    eager-only, ``talib`` extra required, values exact TA-Lib, null warm-up
+    for the first ``n`` bars per partition.
+    """
+    import talib
+
+    def _apply(df: pl.DataFrame) -> pl.DataFrame:
+        arr = talib.KAMA(df["close"].to_numpy(), timeperiod=n)
         return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
 
     return _apply
@@ -203,10 +297,24 @@ INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     ),
     "rs_ratio": (("expr", "int"), _rs_ratio, ()),
     "rs_momentum": (("expr", "int"), _rs_momentum, ()),
+    # --- 0.4.0 single-output TA-Lib parity set ---
+    "wma": (("expr", "int"), _wma, ()),
+    "dema": (("expr", "int"), _dema, ()),
+    "tema": (("expr", "int"), _tema, ()),
+    "trima": (("expr", "int"), _trima, ()),
+    "mom": (("expr", "int"), _mom, ()),
+    "midprice": (("int",), _midprice, ("high", "low")),
+    "cci": (("int",), _cci, ("high", "low", "close")),
+    "willr": (("int",), _willr, ("high", "low", "close")),
+    # dummy-int precedent (ht_trendline): TRANGE takes no period; n is ignored
+    "trange": (("int",), _trange, ("high", "low", "close")),
+    "ad": ((), _ad, ("high", "low", "close", "volume")),
 }
 
-if "adx" not in INDICATORS:  # optional talib parity builder (eager, needs the talib extra)
+if "adx" not in INDICATORS:  # optional talib parity builders (eager, needs the talib extra)
     INDICATORS["adx"] = (("int",), _adx, ("high", "low", "close"))
+if "kama" not in INDICATORS:  # same seam: KAMA's adaptive ratio has no polars-native form
+    INDICATORS["kama"] = (("int",), _kama, ("close",))
 
 """Indicator registry: the ``{"fn": name}`` operand extension point.
 
@@ -232,8 +340,8 @@ no native expression for them. ``macd``, ``bbands``, ``aroon``,
 ``cdlengulfing``, and ``ht_trendline`` live only in
 ``scanlang.duckdb_sql.SQL_INDICATORS`` (duckdb engine, talib extension);
 ``scanlang.compiler.validate(scan_def, engine="duckdb")`` accepts them.
-``adx`` is the first dual-engine exception: a registered parity builder
-here (the group_by/map_groups seam above, exact TA-Lib values) plus its
-``SQL_INDICATORS`` ``t_adx`` entry — the same name validates and executes
-on both engines.
+``adx`` and ``kama`` are dual-engine exceptions: a registered parity builder
+here (the group_by/map_groups seam above, exact TA-Lib values) plus their
+``SQL_INDICATORS`` ``t_adx``/``t_kama`` entries — the same names validate
+and execute on both engines.
 """

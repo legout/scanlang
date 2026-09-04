@@ -13,36 +13,11 @@ site_dir = "site"
 
 nav = [
   { "Home" = "index.md" },
-  { "Tutorials" = [
-    { "First scan in 5 min" = "tutorials/first-scan.md" },
-    { "DSL basics" = "tutorials/dsl-basics.md" },
-  ] },
-  { "How-to guides" = [
-    { "Custom catalog + partition" = "how-to/custom-catalog-partition.md" },
-    { "Extend INDICATORS" = "how-to/extend-indicators.md" },
-    { "Eager vs lazy frames" = "how-to/eager-frames.md" },
-    { "score_bars + stats" = "how-to/score-bars-stats.md" },
-    { "Scan from text" = "how-to/scan-from-text.md" },
-    { "duckdb backend" = "how-to/duckdb-backend.md" },
-  ] },
-  { "Explanation" = [
-    { "IR design" = "explanation/ir-design.md" },
-    { "Lazy contract" = "explanation/lazy-contract.md" },
-    { "Null semantics" = "explanation/null-semantics.md" },
-    { "Validation split" = "explanation/validation-split.md" },
-    { "Why no duckdb" = "explanation/why-no-duckdb.md" },
-  ] },
-  { "Reference" = [
-    { "API" = "reference/api.md" },
-    { "Operators" = "reference/operators.md" },
-    { "Indicators" = "reference/indicators.md" },
-    { "Examples" = "reference/examples.md" },
-    { "Examples walkthrough" = "reference/examples-walkthrough.md" },
-    { "Notebooks" = "reference/notebooks.md" },
-    { "IR freeze" = "reference/ir-freeze.md" },
-    { "Research: duckdb" = "reference/research-duckdb.md" },
-    { "duckdb backend" = "reference/duckdb-backend.md" },
-  ] },
+  { "Use it" = "use.md" },
+  { "Language" = "language.md" },
+  { "Indicators" = "indicators.md" },
+  { "API" = "reference/api.md" },
+  { "More" = "more.md" },
 ]
 
 [project.theme]

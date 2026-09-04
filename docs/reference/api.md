@@ -1,17 +1,14 @@
-# API reference
+# API
 
-Rendered from the source docstrings via mkdocstrings-python. The
-hand-written prose lives in the tutorials, how-tos, and explanations —
-this page is the lookup.
+The task pages explain how to use these objects:
+[Use it](../use.md), [Language](../language.md), [Indicators](../indicators.md),
+and [More](../more.md). This page is the callable reference.
 
-## Top-level
+## Compile and run polars scans
 
-::: scanlang
-    options:
-      show_root_toc_entry: true
-      members: false
-
-## Compiler
+```python
+from scanlang import apply, compile, validate
+```
 
 ::: scanlang.compiler.compile
     options:
@@ -28,6 +25,12 @@ this page is the lookup.
       show_root_heading: true
       heading_level: 3
 
+## Catalogs
+
+Use `PROPERTY_CATALOG` for scored frames or
+`catalog_from_schema` for raw/custom frames. See [Custom schemas and
+partitions](../more.md#custom-schemas-and-partitions).
+
 ::: scanlang.compiler.catalog_from_schema
     options:
       show_root_heading: true
@@ -38,28 +41,30 @@ this page is the lookup.
       show_root_heading: true
       heading_level: 3
 
-## DSL
+## Text DSL
+
+`parse` returns the scan-definition dict consumed by both engines. See
+[Language](../language.md) for syntax and validation rules.
 
 ::: scanlang.dsl.parse
     options:
       show_root_heading: true
       heading_level: 3
 
-## Indicators
+## Scoring and stats
 
-::: scanlang.indicators.INDICATORS
-    options:
-      show_root_heading: true
-      heading_level: 3
-
-## Scoring
+See [Scoring](../more.md#scoring) and [Stats](../more.md#stats) for
+examples and defaults.
 
 ::: scanlang.scoring.score_bars
     options:
       show_root_heading: true
       heading_level: 3
 
-## Stats
+::: scanlang.stats.HORIZONS
+    options:
+      show_root_heading: true
+      heading_level: 3
 
 ::: scanlang.stats.forward_stats
     options:
@@ -71,7 +76,32 @@ this page is the lookup.
       show_root_heading: true
       heading_level: 3
 
-::: scanlang.stats.HORIZONS
+## Registries
+
+See [Indicators](../indicators.md) for availability, signatures, and semantics.
+
+::: scanlang.indicators.INDICATORS
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+## DuckDB
+
+`apply_sql` runs a scan on an existing DuckDB connection and returns an eager
+Polars `DataFrame`. Pass a table or view name as `relation`; it is not a file
+path. See [Use it](../use.md#run-it) for setup.
+
+::: scanlang.duckdb_sql.compile_sql
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+::: scanlang.duckdb_sql.apply_sql
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+::: scanlang.duckdb_sql.SQL_INDICATORS
     options:
       show_root_heading: true
       heading_level: 3

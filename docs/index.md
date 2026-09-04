@@ -1,94 +1,78 @@
 # scanlang
 
-Screener DSL and scan compiler: signal definitions -> polars pushdown filters.
+Define a screen once and run it on polars or DuckDB.
 
-A scan definition is a plain dict (JSON from a UI, a Python literal from a
-notebook) that `scanlang` compiles into one validated polars predicate.
-Nothing is string-interpolated, so there is no injection surface. Filters
-run on any eager `DataFrame` or lazy `LazyFrame`; window semantics
-(indicators, crosses) are computed per partition, so 10 symbols or 10,000
-behave the same.
-
-!!! info "Status: v0.2, pre-alpha"
-    The IR is frozen (see [IR design](explanation/ir-design.md)) — changes
-    are additive only.
+[PyPI](https://pypi.org/project/scanlang/) ·
+[GitHub](https://github.com/legout/scanlang)
 
 ## Install
 
 ```sh
-uv add scanlang          # or: pip install scanlang
+uv add scanlang
+# or: pip install scanlang
 ```
 
-Requires Python >= 3.11 and polars >= 1.44. The optional `talib` extra
-(`uv add scanlang --optional talib`) is reserved for a future value-parity
-indicator module.
+For DuckDB support:
 
-## Quickstart
-
-```python
-import polars as pl
-from scanlang import apply, score_bars, validate
-
-# score OHLCV bars (lazy in, lazy out — collect at your edge)
-scored = score_bars(bars.lazy()).collect()
-
-scan_def = {
-    "filters": [{"property": "score", "op": ">=", "value": 40}],
-    "order_by": [{"property": "score", "dir": "desc"}],
-    "limit": 5,
-}
-
-validate(scan_def)   # [] when valid; never raises
-picks = apply(scored, scan_def)
-print(picks.select("symbol", "score", "phase"))
+```sh
+uv add 'scanlang[duckdb]'
+# or: pip install 'scanlang[duckdb]'
 ```
 
-Prefer eager frames end-to-end? See
-[`docs/examples/07_lazy_vs_sync.py`](https://github.com/legout/scanlang/blob/master/docs/examples/07_lazy_vs_sync.py).
-Prefer a one-liner over the dict? Use the text DSL:
+Python 3.11+ and Polars 1.44+ are required.
+
+## First screen
+
+Input bars must contain `symbol`, `session`, `open`, `high`, `low`, `close`,
+and `volume`, sorted by `symbol` and `session`. The examples below use an
+eager Polars `DataFrame` named `bars`; call `.lazy()` when the next step can
+stay lazy. [Use it](use.md#data) contains a runnable fixture.
 
 ```python
 from scanlang import parse, validate
-ir = parse("ema(20) > ema(50) and rsi(14) > 70")
-validate(ir)   # []
+
+scan_def = parse("ema(20) > ema(50)")
+assert validate(scan_def) == []
 ```
 
-## Where to next
+=== "polars"
 
-The docs follow [Diataxis](https://diataxis.fr/). Pick by what you want
-to do right now:
+    ```python
+    from scanlang import apply
 
-- **Tutorials** — *learning-oriented*. Get from zero to first scan.
-  - [First scan in 5 minutes](tutorials/first-scan.md)
-  - [DSL basics](tutorials/dsl-basics.md)
-- **How-to guides** — *task-oriented*. Solve a specific problem.
-  - [Custom catalog + partition](how-to/custom-catalog-partition.md)
-  - [Extend INDICATORS](how-to/extend-indicators.md)
-  - [Eager vs lazy frames](how-to/eager-frames.md)
-  - [score_bars + stats](how-to/score-bars-stats.md)
-  - [Scan from text](how-to/scan-from-text.md)
-- **Explanation** — *understanding-oriented*. Why it works this way.
-  - [IR design](explanation/ir-design.md)
-  - [Lazy contract](explanation/lazy-contract.md)
-  - [Null semantics](explanation/null-semantics.md)
-  - [Validation split](explanation/validation-split.md)
-  - [Why no duckdb](explanation/why-no-duckdb.md)
-- **Reference** — *information-oriented*. Look up an exact name or shape.
-  - [API](reference/api.md)
-  - [Operators](reference/operators.md)
-  - [Indicators](reference/indicators.md)
-  - [Examples index](reference/examples.md)
+    picks = apply(bars.lazy(), scan_def)
+    result = picks.collect()
+    ```
 
-## Development
+    `apply` preserves the input shape: a `DataFrame` stays eager and a
+    `LazyFrame` stays lazy.
 
-```sh
-uv sync --group docs                            # create .venv with zensical
-.venv/bin/python -m pytest tests/ -q            # tests
-.venv/bin/python -m ruff check src tests         # lint
-.venv/bin/zensical serve                        # live-reload docs at :8000
-.venv/bin/zensical build                        # static build -> site/
-```
+=== "DuckDB"
 
-## License
+    ```python
+    import duckdb
+    from scanlang import validate
+    from scanlang.duckdb_sql import apply_sql
 
-[MIT](https://github.com/legout/scanlang/blob/master/LICENSE)
+    bars.write_parquet("bars.parquet")
+    con = duckdb.connect()
+    con.execute("CREATE VIEW bars AS SELECT * FROM 'bars.parquet'")
+
+    assert validate(scan_def, engine="duckdb") == []
+    result = apply_sql(con, scan_def, relation="bars")
+    ```
+
+    `relation` is a table or view name, not a file path. DuckDB returns an
+    eager Polars `DataFrame` and loads its community `talib` extension.
+
+`scan_def` is a plain dict, so store it as JSON when a screen needs to be
+persisted. See [Use it](use.md) for the complete workflow.
+
+## Find what you need
+
+- [Use it](use.md): prepare data, parse, validate, and run a screen.
+- [Language](language.md): text syntax, operators, groups, and dict shape.
+- [Indicators](indicators.md): all indicator names, signatures, and semantics.
+- [More](more.md): scoring, stats, custom schemas and partitions,
+  extensions, examples, and notebooks.
+- [API](reference/api.md): generated callable and registry reference.

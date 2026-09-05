@@ -38,7 +38,7 @@ talib extension.
 | Tier | Indicators | Form |
 | --- | --- | --- |
 | Native window | `sma`, `rmin`, `rmax`, `shift`, `adr` | `AVG` / `MIN` / `MAX` / `LAG OVER (PARTITION BY ... ORDER BY ... ROWS BETWEEN ...)` with a `count`-guard so warm-up rows are NULL exactly like polars `rolling_*` |
-| talib `t_*` scalar | `ema`, `rsi`, `atr`, `roc`, `natr`, `slope`, `macd`, `bbands_upper`, `bbands_lower`, `adx`, `aroon`, `kama`, `ht_trendline`, `stoch_k`, `stoch_d`, `wma`, `dema`, `tema`, `trima`, `mom`, `midprice`, `cci`, `willr`, `trange`, `ad` | Per-partition list CTE, `t_fn` over the lists, `unnest` back to row-aligned output. Multi-output `t_*` functions (`macd`, `bbands`, `aroon`, `stoch`) are struct-narrowed to one field per scanlang name (see [Multi-output field names](indicators.md#multi-output-field-names) in the indicators reference). |
+| talib `t_*` scalar | `ema`, `rsi`, `atr`, `roc`, `natr`, `slope`, `macd`, `bbands_upper`, `bbands_lower`, `adx`, `adxr`, `aroon`, `kama`, `ht_trendline`, `stoch_k`, `stoch_d`, `ht_dcperiod`, `ht_dcphase`, `wma`, `dema`, `tema`, `trima`, `mom`, `midprice`, `midpoint`, `cci`, `willr`, `trange`, `ad`, `cmo`, `trix` | Per-partition list CTE, `t_fn` over the lists, `unnest` back to row-aligned output. Multi-output `t_*` functions (`macd`, `bbands`, `aroon`, `stoch`) are struct-narrowed to one field per scanlang name (see [Multi-output field names](indicators.md#multi-output-field-names) in the indicators reference). The community extension exposes no `t_*` for the polars-only wave-2 names (`stochrsi`, `apo`, `ppo`, `mfi`, `adosc`, `ultosc`, `obv`, `t3`, `sar`, `accbands_*`), so those names run polars-side only. |
 
 `adr` is a two-step window (true range needs `lag(close)`, and window
 functions cannot nest). The builder stages TR as its own CTE before
@@ -106,7 +106,7 @@ keyword:
 | Engine | Indicator names it accepts |
 | --- | --- |
 | `"polars"` (default) | Every name in `INDICATORS`; rejects talib-only names with `indicator '<name>' requires engine='duckdb'` |
-| `"duckdb"` | Every name in `SQL_INDICATORS` (a strict superset of `INDICATORS`); accepts the talib-only names |
+| `"duckdb"` | Every name in `SQL_INDICATORS` (the shared names plus the duckdb-only `ht_trendline`, `stoch_k`, `stoch_d`); accepts the talib-only names. The eleven polars-only wave-2 names are rejected here — no SQL lowering exists. |
 
 The polars engine never executes the duckdb-only names (`ht_trendline`,
 `stoch_k`, `stoch_d`) — they have no entry in `INDICATORS`. `compile` and
@@ -119,7 +119,9 @@ through `compile_sql` / `apply_sql` — the SQL backend is the only path
 that can plan and execute them. The formerly duckdb-only names (`macd`,
 `bbands_*`, `adx`, `aroon`, `kama`, `cdlengulfing`, plus the curated
 `_CDL_PARITY` candlestick set) now have `INDICATORS` parity builders
-(the talib extra's eager map_groups seam) and run on both engines.
+(the talib extra's eager map_groups seam) and run on both engines — as
+do the wave-2 names with a community-extension `t_*` (`adxr`, `cmo`,
+`trix`, `midpoint`, `ht_dcperiod`, `ht_dcphase`).
 `compile`, `apply`, and `apply_sql`
 all accept the same `engine=` kwarg for consistency; the engine only
 widens the name allowlist, it does not retarget polars to emit SQL.
@@ -140,12 +142,18 @@ expression arg, like `atr`, `macd`, `adx`). `n` is the lookback period
 append their own `?` params in string-occurrence order; `params` is
 positional and must stay in lockstep with the assembled SQL.
 
-`SQL_INDICATORS` is a strict superset of `INDICATORS`: the entries
-shared between the two have identical `arg_spec` and `required_cols`.
-The duckdb-only entries (`ht_trendline`,
+`SQL_INDICATORS` shares the `(arg_spec, builder,
+required_cols)` triple with `INDICATORS`, but
+builders emit SQL fragments instead of `pl.Expr`. The registries
+overlap on the shared names — which have identical `arg_spec` and
+`required_cols` — but neither contains the other: the duckdb-only
+entries (`ht_trendline`,
 `stoch_k`, `stoch_d`) exist only in
-`SQL_INDICATORS`; they have no polars-builder equivalent (the seam
-names `macd`, `bbands_upper`, `bbands_lower`, `aroon`, `adx`, `kama`,
+`SQL_INDICATORS`; they have no polars-builder equivalent. Eleven
+wave-2 names (`ultosc`, `obv`, `mfi`, `adosc`, `stochrsi`, `apo`,
+`ppo`, `t3`, `sar`, `accbands_upper`, `accbands_lower`) are
+polars-only (the seam names
+`macd`, `bbands_upper`, `bbands_lower`, `aroon`, `adx`, `kama`,
 `cdlengulfing`, and the `_CDL_PARITY` candlestick set
 are shared).
 

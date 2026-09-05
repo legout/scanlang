@@ -100,12 +100,16 @@ can flip. Called out in the 0.3.0 release notes.
 ### Indicators and engines
 
 `INDICATORS` is the polars registry. The duckdb
-backend has its own [`SQL_INDICATORS`](../reference/duckdb-backend.md)
-that is a strict superset: the entries shared between the two have
-identical `arg_spec` and `required_cols`, and the duckdb-only names
+backend has its own [`SQL_INDICATORS`](../reference/duckdb-backend.md):
+the entries shared between the two have
+identical `arg_spec` and `required_cols`, the duckdb-only names
 (`ht_trendline`, `stoch_k`, `stoch_d`) exist only on
-the duckdb side. The talib parity names (`macd`, `bbands_upper`,
-`bbands_lower`, `adx`, `aroon`, `kama`) are dual-engine: exact TA-Lib
+the duckdb side, and eleven wave-2 names (`ultosc`, `obv`, `mfi`,
+`adosc`, `stochrsi`, `apo`, `ppo`, `t3`, `sar`, `accbands_upper`,
+`accbands_lower`) are polars-only (no community-extension `t_*`). The
+talib parity names (`macd`, `bbands_upper`,
+`bbands_lower`, `adx`, `adxr`, `aroon`, `kama`, `cmo`, `trix`,
+`midpoint`, `ht_dcperiod`, `ht_dcphase`) are dual-engine: exact TA-Lib
 polars builders (the eager map_groups seam) on this side, `t_*`
 lowerings on the SQL side. [`validate(scan_def, *,
 engine=...)`](../reference/api.md)
@@ -124,7 +128,8 @@ accepts the `engine` kwarg to gate which names pass. The full table:
 The `engine=` kwarg is additive on `validate`, `compile`, and `apply`
 (default `"polars"`). It selects which indicator registry validates
 `{"fn": ...}` names — `"polars"` uses `INDICATORS`, `"duckdb"` uses
-the strict superset in `SQL_INDICATORS`. It does not change which
+`SQL_INDICATORS` (the shared names plus `ht_trendline`, `stoch_k`,
+`stoch_d`). It does not change which
 plan `compile` emits; the polars path always emits `pl.Expr`. For the
 duckdb backend, use [`scanlang.duckdb_sql.compile_sql`](../reference/duckdb-backend.md)
 and `apply_sql` to get parameterized SQL.

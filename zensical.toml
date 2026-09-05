@@ -1,7 +1,7 @@
 [project]
 site_url = "https://legout.github.io/scanlang/"
 site_name = "scanlang"
-site_description = "Screener DSL and scan compiler: signal definitions -> polars pushdown filters."
+site_description = "Screener DSL and scan compiler for Polars and DuckDB."
 site_author = "Volker Lorrmann"
 copyright = "Copyright &copy; 2026 Volker Lorrmann"
 repo_url = "https://github.com/legout/scanlang"

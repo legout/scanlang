@@ -12,11 +12,12 @@ uv add scanlang
 # or: pip install scanlang
 ```
 
-For DuckDB support:
+For Polars TA-Lib indicators or DuckDB support:
 
 ```sh
-uv add 'scanlang[duckdb]'
-# or: pip install 'scanlang[duckdb]'
+uv add 'scanlang[talib]'   # Polars TA-Lib seam
+uv add 'scanlang[duckdb]'  # DuckDB backend
+# pip equivalents: pip install 'scanlang[talib]' / 'scanlang[duckdb]'
 ```
 
 Python 3.11+ and Polars 1.44+ are required.
@@ -29,44 +30,45 @@ eager Polars `DataFrame` named `bars`; call `.lazy()` when the next step can
 stay lazy. [Use it](use.md#data) contains a runnable fixture.
 
 ```python
-from scanlang import parse, validate
-
-scan_def = parse("ema(20) > ema(50)")
-assert validate(scan_def) == []
+screen = "ema(20) > ema(50)"
 ```
 
 === "polars"
 
     ```python
-    from scanlang import apply
+    from scanlang import Scan
 
-    picks = apply(bars.lazy(), scan_def)
+    sl = Scan(bars.lazy())       # catalog derived from bars
+    picks = sl.apply(screen)     # text parsed internally
     result = picks.collect()
     ```
 
-    `apply` preserves the input shape: a `DataFrame` stays eager and a
-    `LazyFrame` stays lazy.
+    `Scan.apply` preserves the input shape. `sl.result` holds its latest output;
+    `sl.materialized` exposes native indicator values such as `ema_20` and
+    `ema_50` on the original frame.
 
 === "DuckDB"
 
     ```python
     import duckdb
-    from scanlang import validate
+    from scanlang import catalog_from_schema, parse, validate
     from scanlang.duckdb_sql import apply_sql
 
+    catalog = catalog_from_schema(bars)
+    scan_def = parse(screen, catalog=catalog)
     bars.write_parquet("bars.parquet")
     con = duckdb.connect()
     con.execute("CREATE VIEW bars AS SELECT * FROM 'bars.parquet'")
 
-    assert validate(scan_def, engine="duckdb") == []
-    result = apply_sql(con, scan_def, relation="bars")
+    assert validate(scan_def, catalog=catalog, engine="duckdb") == []
+    result = apply_sql(con, scan_def, relation="bars", catalog=catalog)
     ```
 
     `relation` is a table or view name, not a file path. DuckDB returns an
     eager Polars `DataFrame` and loads its community `talib` extension.
 
-`scan_def` is a plain dict, so store it as JSON when a screen needs to be
-persisted. See [Use it](use.md) for the complete workflow.
+Call `parse(screen, catalog=sl.catalog)` when you need the plain dict for JSON
+storage or DuckDB. See [Use it](use.md) for the complete workflow.
 
 ## Find what you need
 

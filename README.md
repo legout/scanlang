@@ -5,15 +5,14 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange)](https://pypi.org/project/scanlang/)
 
-Screener DSL and scan compiler: signal definitions to polars pushdown filters.
+Screener DSL and scan compiler for Polars and DuckDB.
 
-A scan definition is a plain dict (JSON from a UI, a Python literal from a notebook)
-that `scanlang` compiles into one validated polars predicate. Nothing is
-string-interpolated, so there is no injection surface. Filters run on eager
-`DataFrame` or lazy `LazyFrame`; window semantics are computed per partition.
+Write screens as text, bind a Polars frame once with `Scan`, or parse them into
+plain dicts for storage and DuckDB. Filters preserve eager/lazy shape and
+window semantics reset per partition.
 
-Status: **v0.3, pre-alpha**. The IR is frozen (additive changes only). For the
-design rationale, see [docs/explanation/ir-design.md](docs/explanation/ir-design.md).
+Status: **v0.4, pre-alpha**. The IR is frozen (additive changes only). The
+public docs are at [legout.github.io/scanlang](https://legout.github.io/scanlang/).
 
 ## Install
 
@@ -21,64 +20,43 @@ design rationale, see [docs/explanation/ir-design.md](docs/explanation/ir-design
 uv add scanlang              # or: pip install scanlang
 ```
 
-Requires Python >= 3.11 and polars >= 1.44. The optional `duckdb` extra
-(`uv add 'scanlang[duckdb]'` or `pip install 'scanlang[duckdb]'`) pulls
-duckdb >= 1.5 and enables the [`scanlang.duckdb_sql`](docs/reference/duckdb-backend.md)
-backend, which compiles the same IR to parameterized SQL against the
-community talib extension. The optional `talib` extra remains a
-placeholder for value-parity indicator helpers.
+Requires Python >= 3.11 and polars >= 1.44. Add the optional extras only for
+the path you use:
 
-## Quickstart (eager)
+```sh
+uv add 'scanlang[talib]'   # Polars indicators backed by official TA-Lib
+uv add 'scanlang[duckdb]'  # DuckDB >= 1.5 backend
+```
 
-Copy-pasteable end-to-end. Defines its own small OHLCV frame, scores it,
-applies a scan, and prints the picks. The full annotated walkthrough lives in
-[`docs/examples/01_quickstart.py`](docs/examples/01_quickstart.py).
+The DuckDB backend loads the community `talib` extension itself.
+
+## Quickstart
 
 ```python
 import polars as pl
-from scanlang import apply, score_bars, validate
+from scanlang import Scan
 
 bars = pl.DataFrame({
-    "symbol": ["AAA"] * 30 + ["BBB"] * 30,
-    "session": pl.date_range(pl.date(2026, 1, 1), pl.date(2026, 3, 1), interval="1d", eager=True)[:30].to_list() * 2,
-    "open":   [10 + i for i in range(30)] + [60 - i for i in range(30)],
-    "high":   [11 + i for i in range(30)] + [61 - i for i in range(30)],
-    "low":    [9  + i for i in range(30)] + [59 - i for i in range(30)],
-    "close":  [10 + i for i in range(30)] + [60 - i for i in range(30)],
+    "symbol": ["AAA"] * 60,
+    "session": pl.date_range(
+        pl.date(2026, 1, 1), pl.date(2026, 3, 1), interval="1d", eager=True
+    ),
+    "open":   [10 + i for i in range(60)],
+    "high":   [11 + i for i in range(60)],
+    "low":    [9 + i for i in range(60)],
+    "close":  [10 + i for i in range(60)],
     "volume": [1000.0] * 60,
 })
 
-scored = score_bars(bars).collect()                    # LazyFrame -> DataFrame at the edge
-scan_def = {
-    "filters":  [{"property": "score", "op": ">=", "value": 40}],
-    "order_by": [{"property": "score", "dir": "desc"}],
-    "limit":    5,
-}
-validate(scan_def)                                      # [] when valid; never raises
-print(apply(scored, scan_def).select("symbol", "score", "phase"))
+sl = Scan(bars)  # catalog derived once
+hits = sl.apply("ema(20) > ema(50)")
+features = sl.materialized  # bars + ema_20 + ema_50
 ```
 
-The full quickstart script (lazy in, collect at the edge) is
-[`docs/examples/01_quickstart.py`](docs/examples/01_quickstart.py). Side-by-side
-eager/lazy/piped/renamed modes: [`docs/examples/07_lazy_vs_sync.py`](docs/examples/07_lazy_vs_sync.py).
-
-## Quickstart (text DSL)
-
-Prefer a one-liner over the dict? `parse` turns human syntax into the same
-scan dict. The golden-cross form uses `cross_above` so the signal only fires
-when the 20-EMA actually crosses above the 50-EMA:
-
-```python
-from scanlang import parse, validate
-
-ir = parse("cross_above(ema(20), ema(50)) and rsi(close, 14) > 70")
-validate(ir)                                            # [] when valid
-```
-
-`ema(20)` and `sma(20)` imply the `close` column; indicators that take an
-expression like `rsi` need it spelled out (`rsi(close, 14)`). Full grammar and
-operator reference: [`docs/reference/operators.md`](docs/reference/operators.md),
-[`docs/how-to/scan-from-text.md`](docs/how-to/scan-from-text.md).
+`Scan.apply` accepts text or a parsed dict. `sl.data`, `sl.catalog`, and
+`sl.result` expose the bound frame, derived catalog, and latest result.
+`materialized` exposes native Polars indicator nodes from the last screen.
+See [Use it](https://legout.github.io/scanlang/use/) for the complete workflow.
 
 ## Eager vs lazy at a glance
 
@@ -95,7 +73,10 @@ Full guide: [`docs/how-to/eager-frames.md`](docs/how-to/eager-frames.md).
 
 ## Engines at a glance
 
-Two backends consume the same scan-def dict. Pick per data edge.
+Two backends consume the same parsed dict. Their registries overlap; neither is
+a strict superset. Check the
+[indicator table](https://legout.github.io/scanlang/indicators/) before sharing a
+screen across engines.
 
 | Engine | Backend module | When to use it |
 | --- | --- | --- |
@@ -106,51 +87,36 @@ The duckdb backend:
 
 ```python
 import duckdb
-from scanlang import validate
+from scanlang import parse, validate
 from scanlang.duckdb_sql import apply_sql
 
 con = duckdb.connect()
 con.execute("CREATE VIEW bars AS SELECT * FROM 'daily_bars.parquet'")
 
 scan_def = {
-    "filters": [
-        {"property": {"fn": "macd", "args": [12]}, "op": ">", "value": 0},
-        {"property": "score", "op": ">=", "value": 40},
-    ],
-    "order_by": [{"property": "score", "dir": "desc"}],
+    **parse("macd(12) > 0 and close > 4"),
+    "order_by": [{"property": "close", "dir": "desc"}],
     "limit": 20,
 }
-validate(scan_def, engine="duckdb")     # [] when valid
+assert validate(scan_def, engine="duckdb") == []
 hits = apply_sql(con, scan_def, relation="bars")
 ```
 
-`apply_sql` calls `INSTALL talib FROM community; LOAD talib` on the
-connection itself. The full module surface, lowering rules, and
-`SQL_INDICATORS` registry:
-[`docs/reference/duckdb-backend.md`](docs/reference/duckdb-backend.md).
-Install and connect walk-through:
-[`docs/how-to/duckdb-backend.md`](docs/how-to/duckdb-backend.md).
+`relation` is a table or view name, not a file path. `apply_sql` loads the
+community `talib` extension on the connection.
 
-## Docs (Diataxis)
+## Docs
 
-Build the site locally with `uv run --group docs zensical build` (config:
-[`zensical.toml`](zensical.toml)). Follows the [Diataxis](https://diataxis.fr/)
-split:
+The public site is intentionally six pages:
 
-- [Tutorials](docs/tutorials/first-scan.md) - learning-oriented; get to a first scan.
-- [How-to guides](docs/how-to/) - task-oriented; solve a specific problem (custom
-  catalog/partition, extending indicators, scan from text, score + stats,
-  duckdb backend).
-- [Explanation](docs/explanation/) - understanding-oriented; IR design, lazy
-  contract, null semantics, validation split, and the SQL backend that
-  supersedes the "why no duckdb" verdict.
-- [Reference](docs/reference/) - information-oriented; API, operators,
-  indicators, examples index, notebooks, IR freeze, duckdb backend.
+- [Home](https://legout.github.io/scanlang/): install and first screen
+- [Use it](https://legout.github.io/scanlang/use/): `Scan`, persistence, both engines, materialized indicators
+- [Language](https://legout.github.io/scanlang/language/): text syntax and stored dict shape
+- [Indicators](https://legout.github.io/scanlang/indicators/): names, signatures, engine availability
+- [API](https://legout.github.io/scanlang/reference/api/): callable reference
+- [More](https://legout.github.io/scanlang/more/): scoring, stats, custom schemas, extensions, examples
 
-Notebooks: [`01_first_scan.ipynb`](docs/notebooks/01_first_scan.ipynb) (Jupyter)
-and [`02_first_scan_marimo.py`](docs/notebooks/02_first_scan_marimo.py) (marimo)
-- the same first scan as a runnable notebook. See
-[`docs/reference/notebooks.md`](docs/reference/notebooks.md).
+Build it locally with `uv run zensical build --clean --strict`.
 
 ## Development
 

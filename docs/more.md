@@ -9,15 +9,15 @@ for the main scan path.
 lazy frame and expects data sorted by `symbol` and `session`.
 
 ```python
-from scanlang import apply, score_bars
+from scanlang import Scan, parse, score_bars
 
+sl = Scan(score_bars(bars))
 scan_def = {
-    "filters": [{"property": "score", "op": ">=", "value": 40}],
+    **parse("score >= 40", catalog=sl.catalog),
     "order_by": [{"property": "score", "dir": "desc"}],
     "limit": 5,
 }
-
-picks = apply(score_bars(bars), scan_def).collect()
+picks = sl.apply(scan_def).collect()
 ```
 
 Defaults:
@@ -76,38 +76,32 @@ Each horizon is a
 
 ## Custom schemas and partitions
 
-For raw or custom frames, derive a catalog from the schema and pass the column
-that defines a partition:
+For raw or custom Polars frames, `Scan` derives the catalog from the schema.
+Pass the column that defines a partition once:
 
 ```python
-from scanlang import apply, catalog_from_schema, validate
+from scanlang import Scan
 
 bars = bars.rename({"symbol": "ticker"})
-catalog = catalog_from_schema(bars)
-scan_def = {
-    "filters": [{"property": "close", "op": ">", "value": 50}]
-}
-
-hits = apply(bars, scan_def, catalog=catalog, partition="ticker")
+sl = Scan(bars, partition="ticker")
+hits = sl.apply("close > 50")
 ```
 
 Windows and crossovers now reset at `ticker`. Keep the frame sorted by
 partition and session. `catalog_from_schema` maps Polars string, numeric,
 boolean, date, and datetime fields; skipped dtypes can be added by hand.
 
-To combine scored fields with custom fields:
+To combine scored fields with custom fields, pass a merged catalog:
 
 ```python
-from scanlang import PROPERTY_CATALOG
+from scanlang import PROPERTY_CATALOG, Scan, catalog_from_schema
 
 catalog = {**PROPERTY_CATALOG, **catalog_from_schema(scored)}
+sl = Scan(scored, catalog=catalog)
 ```
 
-Validate against the same catalog before applying the screen:
-
-```python
-errors = validate(scan_def, catalog=catalog)
-```
+The functional API remains available. Pass the same custom catalog to
+`parse`, `validate`, and `apply`; parsed dicts do not carry a catalog.
 
 ## Extend a registry
 

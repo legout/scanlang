@@ -9,7 +9,8 @@
 
 Most TA-Lib indicators share one name on both engines. The polars builders
 run exact TA-Lib values through an eager per-partition seam and need the
-optional `talib` extra (`uv add 'scanlang[talib]'`); the DuckDB builders use
+optional `talib` extra (`uv add 'scanlang[talib]'` or
+`pip install 'scanlang[talib]'`); the DuckDB builders use
 the community `talib` extension, loaded by `apply_sql` itself. Only
 `ht_trendline`, `stoch_k`, and `stoch_d` remain DuckDB-only, and eleven
 wave-2 names (`ultosc`, `obv`, `mfi`, `adosc`, `stochrsi`, `apo`, `ppo`,

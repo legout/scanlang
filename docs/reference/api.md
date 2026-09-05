@@ -4,7 +4,31 @@ The task pages explain how to use these objects:
 [Use it](../use.md), [Language](../language.md), [Indicators](../indicators.md),
 and [More](../more.md). This page is the callable reference.
 
-## Compile and run polars scans
+## Bind and run Polars scans
+
+`Scan` derives one catalog from a frame, accepts text or dict screens, and keeps
+the latest result. `materialize` adds columns for native Polars indicators used
+by a screen. See [Use it](../use.md#inspect-indicator-values) for examples and
+limitations.
+
+```python
+from scanlang import Scan, materialize
+```
+
+::: scanlang.session.Scan
+    options:
+      show_root_heading: true
+      heading_level: 3
+      members:
+        - apply
+        - materialized
+
+::: scanlang.session.materialize
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+## Compile and run Polars scans
 
 ```python
 from scanlang import apply, compile, validate

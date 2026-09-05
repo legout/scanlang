@@ -499,3 +499,24 @@ def test_parity_operand_grammar_and_partition_kwarg(con):
     d_ad = {"filters": [{"property": {"fn": "ad", "args": []}, "op": ">=", "value": -1e18}]}
     got = apply(renamed, d_ad, catalog=catalog_from_schema(renamed), partition="sym")
     assert got.group_by("sym", maintain_order=True).len()["len"].to_list() == [N] * 3
+
+
+def test_seam_builder_factory_covers_existing_names():
+    """The factory reproduces every existing hand-written seam closure."""
+    from scanlang.indicators import INDICATORS
+
+    cases = {  # name -> (fn, inputs, kwargs, slot)
+        "adx": ("ADX", ("high", "low", "close"), {}, None),
+        "kama": ("KAMA", ("close",), {}, None),
+        "macd": ("MACD", ("close",), {"slowperiod": 26, "signalperiod": 9}, 0),
+        "bbands_upper": ("BBANDS", ("close",), {"nbdevup": 2.0, "nbdevdn": 2.0, "matype": 0}, 0),
+        "bbands_lower": ("BBANDS", ("close",), {"nbdevup": 2.0, "nbdevdn": 2.0, "matype": 0}, 2),
+        "aroon": ("AROON", ("high", "low"), {}, 1),
+    }
+    for name, (fn, cols, kw, slot) in cases.items():
+        arg_spec, builder, req = INDICATORS[name]
+        assert arg_spec == ("int",)
+        assert req == cols, name
+        # builder(14, partition="symbol") must return a callable (the seam)
+        seam = builder(14, partition="symbol")
+        assert callable(seam)

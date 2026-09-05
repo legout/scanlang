@@ -4,11 +4,13 @@ Each entry:
 - ``arg_spec``: tuple with one tag per positional arg — ``"expr"`` (any operand) or
   ``"int"`` (literal int >= 1).
 - ``builder(*parsed, partition) -> pl.Expr``: polars-native; every window op uses
-  ``.over(partition)``. Exception: ``adx`` is the TA-Lib parity slice — its
-  builder returns a ``DataFrame -> DataFrame`` callable for
+  ``.over(partition)``. Exception: the TA-Lib parity slice (``adx``, ``kama``,
+  ``macd``, ``bbands_upper``/``bbands_lower``, ``aroon``) — its builders come from
+  ``_seam_builder`` (the one seam closure, fed by the ``_TALIB_SEAM`` table) and
+  return a ``DataFrame -> DataFrame`` callable for
   ``group_by(partition, maintain_order=True).map_groups(...)`` (eager collect
-  required, ``talib`` extra required), matching the duckdb ``t_adx`` values
-  exactly, with null (NaN normalized) warm-up for the first ``2n-1`` bars.
+  required, ``talib`` extra required), matching the duckdb ``t_*`` values
+  exactly, with null (NaN normalized) warm-up.
 - ``required_cols``: columns that must exist in the catalog (e.g. ``atr`` needs
   ``high, low, close``).
 
@@ -220,100 +222,48 @@ def _ad(_n=None, partition: str = "symbol") -> pl.Expr:
     return (clv * pl.col("volume")).cum_sum().over(partition)
 
 
-def _adx(n: int, partition: str):
-    """talib ADX per partition via the group_by/map_groups seam (0.4.0 parity plan).
+def _seam_builder(
+    fn: str, inputs: tuple[str, ...], n_kw: str, kwargs: dict, slot: int | None
+):
+    """Eager talib seam: bind the call at n-bind time, per-partition map_groups.
 
-    Eager-only by contract (map_groups has no lazy form) and requires the
-    ``talib`` extra; collected results are exact TA-Lib — null for the first
-    ``2n-1`` bars per partition (NaN warm-up normalized), exact afterwards.
+    One factory for every bindable-period parity function (adx, kama, macd,
+    bbands_upper/lower, aroon, ...) — the ``_TALIB_SEAM`` table below is
+    data, this is the only seam closure. Row order here matches the table
+    rows 1:1. Returns a builder compatible with the apply() staging in
+    compiler.py: called with (n, partition=...) it returns a
+    ``(df) -> DataFrame`` callable whose output lands in the reserved
+    ``__adx`` column (apply() renames it to a unique alias; a user column
+    named like the indicator must not be clobbered), NaN warm-up normalized
+    to null. Eager-only by contract (map_groups has no lazy form); talib is
+    imported at n-bind time so registry insertion stays extra-free
+    (test_talib_missing.py contract).
+
+    ``n`` binds to ``n_kw``: ``timeperiod`` for most fns; fast/slow fns
+    (macd) take no timeperiod — n is the fast period and the slow/signal
+    pair is pinned in ``kwargs`` (no parameter polymorphism — same
+    signature both engines). ``slot`` narrows multi-output functions to the
+    one approved scalar per scanlang name (talib BBANDS order: upper,
+    middle, lower; the middle band is plain sma and stays unexposed; talib
+    AROON order is (down, up), slot 1 = the up line — the swap is pinned by
+    test).
     """
-    import talib
-
-    def _apply(df: pl.DataFrame) -> pl.DataFrame:
-        arr = talib.ADX(
-            df["high"].to_numpy(), df["low"].to_numpy(), df["close"].to_numpy(), timeperiod=n
-        )
-        # reserved "__adx" output name — apply() renames it to a unique alias
-        # (a user column literally named "adx" must not be clobbered)
-        return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
-
-    return _apply
-
-
-def _kama(n: int, partition: str):
-    """talib KAMA per partition via the same group_by/map_groups seam as ``_adx``.
-
-    KAMA's adaptive filtering ratio has no exact polars-native expression;
-    eager-only, ``talib`` extra required, values exact TA-Lib, null warm-up
-    for the first ``n`` bars per partition.
-    """
-    import talib
-
-    def _apply(df: pl.DataFrame) -> pl.DataFrame:
-        arr = talib.KAMA(df["close"].to_numpy(), timeperiod=n)
-        return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
-
-    return _apply
-
-
-def _macd(n: int, partition: str):
-    """talib MACD per partition via the same group_by/map_groups seam as ``_adx``.
-
-    n = fast period; slow=26 / signal=9 stay at the talib defaults the SQL
-    ``_macd`` lowering pins (no parameter polymorphism — same signature both
-    engines). Emits the MACD line only: the struct's signal/hist fields are
-    not exposed (approved catalog narrows one field per scanlang name).
-    """
-    import talib
-
-    def _apply(df: pl.DataFrame) -> pl.DataFrame:
-        arr = talib.MACD(
-            df["close"].to_numpy(), fastperiod=n, slowperiod=26, signalperiod=9
-        )[0]
-        return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
-
-    return _apply
-
-
-def _bbands(side: str):
-    """talib BBANDS upper/lower band — one seam builder per scanlang name.
-
-    ``side`` picks the array slot (talib BBANDS order: upper, middle, lower;
-    the middle band is plain sma and stays unexposed). nbdev 2.0 / matype 0
-    are the talib defaults the SQL ``_bband`` lowering pins. talib is only
-    imported at n-bind time, so registry insertion stays extra-free.
-    """
-    idx = {"upper": 0, "lower": 2}[side]
 
     def build(n: int, partition: str):
         import talib
+
+        call = getattr(talib, fn)
+        kw = {n_kw: n, **kwargs}
+
         def _apply(df: pl.DataFrame) -> pl.DataFrame:
-            arr = talib.BBANDS(
-                df["close"].to_numpy(), timeperiod=n, nbdevup=2.0, nbdevdn=2.0, matype=0
-            )[idx]
+            arr = call(*[df[c].to_numpy() for c in inputs], **kw)
+            if slot is not None:
+                arr = arr[slot]
             return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
 
         return _apply
 
     return build
-
-
-def _aroon(n: int, partition: str):
-    """talib AROON up line per partition via the seam; down line unexposed.
-
-    talib.AROON returns (down, up) — index 1 is the up line, matching the
-    SQL ``_aroon`` lowering's ``['aroon_up']`` struct field. The up/down
-    swap is pinned by test (both lines differ per-row on the fixture).
-    """
-    import talib
-
-    def _apply(df: pl.DataFrame) -> pl.DataFrame:
-        _down, up = talib.AROON(
-            df["high"].to_numpy(), df["low"].to_numpy(), timeperiod=n
-        )
-        return df.with_columns(pl.Series("__adx", up).fill_nan(None))
-
-    return _apply
 
 
 # candlestick patterns: every registered CDL* has the identical (o,h,l,c)
@@ -454,23 +404,30 @@ INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "ad": ((), _ad, ("high", "low", "close", "volume")),
 }
 
-if "adx" not in INDICATORS:  # optional talib parity builders (eager, needs the talib extra)
-    INDICATORS["adx"] = (("int",), _adx, ("high", "low", "close"))
-if "kama" not in INDICATORS:  # same seam: KAMA's adaptive ratio has no polars-native form
-    INDICATORS["kama"] = (("int",), _kama, ("close",))
-# multi-output talib parity (same seam): MACD line, BBANDS upper/lower,
-# AROON up — one scalar column per scanlang name, struct fields narrowed at
-# the builder (never through the IR). arg_spec/required_cols mirror the
-# SQL_INDICATORS entries 1:1; signal/hist, the middle band, and aroon_down
-# stay unexposed per the approved catalog (middle band is just sma).
-if "macd" not in INDICATORS:
-    INDICATORS["macd"] = (("int",), _macd, ("close",))
-if "bbands_upper" not in INDICATORS:
-    INDICATORS["bbands_upper"] = (("int",), _bbands("upper"), ("close",))
-if "bbands_lower" not in INDICATORS:
-    INDICATORS["bbands_lower"] = (("int",), _bbands("lower"), ("close",))
-if "aroon" not in INDICATORS:
-    INDICATORS["aroon"] = (("int",), _aroon, ("high", "low"))
+# name -> (talib_fn, inputs, n_kw, fixed kwargs, output slot)
+# One row per seam name; the single ``_seam_builder`` factory above consumes
+# these (row order 1:1 — Task 0 decision in the plan). ``inputs`` are the
+# catalog columns the C function reads (they are the registration's
+# required_cols). ``slot``: None = scalar output; int = index into the
+# tuple return (the one-field-per-name narrowing). ``n_kw`` is the kwarg n
+# binds to — ``timeperiod`` for most fns; fast/slow fns (macd) take no
+# timeperiod: n is the fast period, the pair is pinned in kwargs. Fns with
+# no bindable period (ad, CDL; wave-2 ultosc/obv/sar/ht_*) stay hand-written.
+_TALIB_SEAM = {
+    "adx": ("ADX", ("high", "low", "close"), "timeperiod", {}, None),
+    "kama": ("KAMA", ("close",), "timeperiod", {}, None),
+    "macd": ("MACD", ("close",), "fastperiod", {"slowperiod": 26, "signalperiod": 9}, 0),
+    "bbands_upper": ("BBANDS", ("close",), "timeperiod", {"nbdevup": 2.0, "nbdevdn": 2.0, "matype": 0}, 0),
+    "bbands_lower": ("BBANDS", ("close",), "timeperiod", {"nbdevup": 2.0, "nbdevdn": 2.0, "matype": 0}, 2),
+    "aroon": ("AROON", ("high", "low"), "timeperiod", {}, 1),  # talib order (down, up); slot 1 = up
+}
+
+# optional talib parity builders (eager, needs the talib extra). Registry
+# mutation is idempotent (the extension point contract); the seam builders
+# import talib only when n is bound, so insertion stays talib-free and the
+# names validate on a talib-less interpreter (test_talib_missing.py).
+for _name, (_fn, _cols, _nkw, _kw, _slot) in _TALIB_SEAM.items():
+    INDICATORS.setdefault(_name, (("int",), _seam_builder(_fn, _cols, _nkw, _kw, _slot), _cols))
 # candlestick-pattern parity (same seam, extra-free import): every CDL name
 # is the dummy-int precedent (patterns take no period); on a talib-less
 # interpreter the entry still registers (the name set is static, no import

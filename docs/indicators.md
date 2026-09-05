@@ -3,14 +3,19 @@
 `scanlang` has two indicator registries:
 
 - `INDICATORS` contains polars builders.
-- `SQL_INDICATORS` contains DuckDB builders and is a superset of the polars
-  registry.
+- `SQL_INDICATORS` contains DuckDB builders; the registries share most
+  names (identical `arg_spec` and `required_cols`), with three
+  DuckDB-only and eleven polars-only names.
 
 Most TA-Lib indicators share one name on both engines. The polars builders
 run exact TA-Lib values through an eager per-partition seam and need the
 optional `talib` extra (`uv add 'scanlang[talib]'`); the DuckDB builders use
 the community `talib` extension, loaded by `apply_sql` itself. Only
-`ht_trendline`, `stoch_k`, and `stoch_d` remain DuckDB-only.
+`ht_trendline`, `stoch_k`, and `stoch_d` remain DuckDB-only, and eleven
+wave-2 names (`ultosc`, `obv`, `mfi`, `adosc`, `stochrsi`, `apo`, `ppo`,
+`t3`, `sar`, `accbands_upper`, `accbands_lower`) are polars-only — the
+community extension has no matching `t_*` function for them
+(live-probed `duckdb_functions()`), so no SQL lowering is faked.
 
 The full per-name table below is generated from the live registries:
 
@@ -20,14 +25,15 @@ uv run python scripts/gen_indicator_availability.py
 
 --8<-- "reference/_indicator_availability.md"
 
-The three DuckDB-only names (`ht_trendline`, `stoch_k`, `stoch_d`) are in the
-full table (`reference/_indicator_availability_full.md`); they have no polars
-builder.
+The three DuckDB-only names (`ht_trendline`, `stoch_k`, `stoch_d`) and the
+eleven polars-only names above are in the
+full table (`reference/_indicator_availability_full.md`).
 
 For `ema`, `rsi`, and `atr`, the two engines converge after warm-up rather
 than agreeing bar-for-bar (TA-Lib SMA seeding vs. first-value seeding). The
-parity names (`adx`, `macd`, `bbands_*`, `aroon`, `kama`, `wma`, `dema`,
-`tema`, `trima`, `mom`, `midprice`, `cci`, `willr`, `trange`, `ad`, and the
+parity names (`adx`, `adxr`, `macd`, `bbands_*`, `aroon`, `kama`, `wma`, `dema`,
+`tema`, `trima`, `mom`, `midprice`, `cci`, `willr`, `trange`, `ad`, `cmo`,
+`trix`, `midpoint`, `ht_dcperiod`, `ht_dcphase`, and the
 curated candlestick set) are exact TA-Lib values on both engines, bar-for-bar.
 See the warm-up table in `reference/indicators.md` for the per-family counts.
 
@@ -42,6 +48,8 @@ never a struct through the IR:
 | `bbands_upper` / `bbands_lower` | `BBANDS(close, n, 2.0, 2.0, 0)` | `upperband` / `lowerband` (middle band is `sma`) |
 | `aroon` | `AROON(high, low, n)` | `aroon_up` |
 | `stoch_k` / `stoch_d` | `STOCH(high, low, close, ...)` | `slowk` / `slowd` |
+| `stochrsi` | `STOCHRSI(close, n, 14, 3, 0)` | `fastk` |
+| `accbands_upper` / `accbands_lower` | `ACCBANDS(high, low, close, n)` | `upperband` / `lowerband` (middle band derivable) |
 
 ## Signatures
 
@@ -66,7 +74,8 @@ expression unless noted otherwise. `ema(20)`, `sma(20)`, `rmin(20)`, and
 | `rs_momentum` | `rs_momentum(expr, n)` | 4-bar ROC, EMA(3), then trailing z-score |
 
 All remaining parity names follow the TA-Lib reference signature
-(`macd(n)`, `bbands_upper(n)`, `adx(n)`, `aroon(n)`, `cdlengulfing()`, etc.) — the generated availability table lists
+(`macd(n)`, `bbands_upper(n)`, `adx(n)`, `aroon(n)`, `cmo(n)`, `obv(n)`,
+`cdlengulfing()`, etc.) — the generated availability table lists
 each name's args and required columns.
 
 Indicators can nest:

@@ -9,8 +9,9 @@ be extended by insertion. Each entry is `(arg_spec, builder, required_cols)`:
 - `builder(*parsed, partition) -> pl.Expr` — your polars expression,
   window ops via `.over(partition)`. **Exception:** the
   [TA-Lib parity seam](#ta-lib-parity-seam-multi-output-narrowing) builders
-  (adx, kama, macd, bbands_*, aroon, cdlengulfing, the curated candlestick
-  set) return a `DataFrame -> DataFrame` callable for
+  (`adx`, `kama`, `macd`, `bbands_*`, `aroon`, the wave-2 parity names,
+  `cdlengulfing`, the curated candlestick set) return a
+  `DataFrame -> DataFrame` callable for
   `group_by(partition, maintain_order=True).map_groups(...)` — eager
   collect required, the `talib` extra required, exact TA-Lib values.
 - `required_cols` — column names the catalog must have (e.g. `atr`
@@ -18,10 +19,15 @@ be extended by insertion. Each entry is `(arg_spec, builder, required_cols)`:
 
 ## Engine availability
 
-Indicators run on one or both backends. The polars backend is the
-default and supports everything in `INDICATORS`. The duckdb backend
-adds the rest through [`SQL_INDICATORS`](../reference/duckdb-backend.md)
-— a strict superset of `INDICATORS`.
+Indicators run on one or both backends. The polars backend
+supports everything in `INDICATORS`; the duckdb backend runs
+[`SQL_INDICATORS`](../reference/duckdb-backend.md). The two registries
+overlap but neither contains the other: three names are DuckDB-only
+(`ht_trendline`, `stoch_k`, `stoch_d`), and eleven wave-2 names are
+polars-only (`ultosc`, `obv`, `mfi`, `adosc`, `stochrsi`, `apo`, `ppo`,
+`t3`, `sar`, `accbands_upper`, `accbands_lower` — the community talib
+extension exposes no `t_*` for them). Shared names have identical
+`arg_spec` and `required_cols` on both engines.
 
 The full table is **generated** from the live registries (single
 source of truth, no hand-maintained counts that can drift). Regenerate
@@ -37,7 +43,9 @@ The generator writes:
   shown below (the names present in both registries)
 - `docs/reference/_indicator_availability_full.md` — every name,
   including the three duckdb-only entries (`ht_trendline`,
-  `stoch_k`, `stoch_d`)
+  `stoch_k`, `stoch_d`) and the eleven polars-only wave-2 entries
+  (`ultosc`, `obv`, `mfi`, `adosc`, `stochrsi`, `apo`, `ppo`, `t3`,
+  `sar`, `accbands_upper`, `accbands_lower`)
 
 --8<-- "reference/_indicator_availability.md"
 
@@ -72,10 +80,14 @@ through the IR, one field per name):
 | `aroon` | `AROON(high, low, n)` | `aroon_up` | `aroon_down` (its mirror for short setups; add a separate entry if ever needed) |
 | `stoch_k` | `STOCH(high, low, close, fastk, slowk, 0, slowd, 0)` | `slowk` | `slowd` (its own scanlang name), `fastk` |
 | `stoch_d` | `STOCH(high, low, close, fastk, slowk, 0, slowd, 0)` | `slowd` | `slowk`, `fastk` |
+| `stochrsi` | `STOCHRSI(close, n, 14, 3, 0)` | `fastk` | `fastd` (the signal line of `fastk`, derivable) |
+| `accbands_upper` | `ACCBANDS(high, low, close, n)` | `upperband` | `middleband` (its own `sma`-shaped average), `lowerband` (its own scanlang name) |
+| `accbands_lower` | `ACCBANDS(high, low, close, n)` | `lowerband` | `middleband`, `upperband` |
 
 The polars engine stages the eager seam names (`adx`, `kama`, `macd`,
-`bbands_upper`, `bbands_lower`, `aroon`, `cdlengulfing`, the curated
-candlestick set) via `group_by(partition, maintain_order=True).map_groups(...)`
+`bbands_upper`, `bbands_lower`, `aroon`, the wave-2 parity names,
+`cdlengulfing`, the curated candlestick set) via
+`group_by(partition, maintain_order=True).map_groups(...)`
 and pre-materializes the result as `__<name>_0` in the predicate. The
 column is always named with the `__<name>_0` prefix so a user column
 literally named `adx` (or any other scanlang name) cannot be clobbered.
@@ -104,6 +116,21 @@ real value per partition. The contract differs by family:
 | `aroon` | `n` rows | `AROON` looks back `n` bars; the seam's NaN is normalized to null. |
 | `bbands_upper` / `bbands_lower` | `n − 1` rows | SMA of length `n` inside BBANDS. |
 | `ad` | 0 (cumulative) | No warm-up; cumulative from bar 0 (zero-range bars pin 0.0 to avoid NaN propagation). |
+| `obv` | 0 (cumulative) | Same talib semantic as `ad`: OBV starts at 0, not null — the availability table's warm-up column says 0, that is not a bug. |
+| `sar` | 1 row | Needs one prior bar to start the trend state. |
+| `adosc` | 9 rows (fast=3, slow=10) | Combined fast/slow EMA lookback of the Chaikin oscillator. |
+| `ultosc` | 28 rows (default 7/14/28) | The longest of the three semantic periods. |
+| `adxr` | 40 rows (2n − 1 for ADXR smoothing, n=14) | ADXR re-smooths ADX, doubling its lookback. |
+| `cmo` | `n` rows | Window of `n` up/down deltas. |
+| `trix` | 40 rows (triple EMA(14) cascade) | Three chained EMA seeds (3 × (n − 1) + 2). |
+| `stochrsi` | 29 rows (n=14, fastk=14, fastd=3) | RSI window + Stoch-of-RSI lookback + %D smoothing. |
+| `apo` / `ppo` | 25 rows (fast=12, slow=26) | The slow EMA seed dominates (n binds `fastperiod`). |
+| `mfi` | `n` rows | Window of `n` money-flow sums. |
+| `midpoint` | `n − 1` rows | SMA-shaped average of high/low midpoints. |
+| `t3` | 78 rows (n=14, vfactor 0.7) | Six-fold EMA cascade. |
+| `accbands_upper` / `accbands_lower` | `n − 1` rows | Acceleration-band SMA over `n`. |
+| `ht_dcperiod` | 32 rows | Hilbert transform, TA-Lib documented. |
+| `ht_dcphase` | 63 rows | Hilbert transform, TA-Lib documented. |
 | Candlestick set (`_CDL_PARITY`) | 0 rows (patterns are 2-bar, no warm-up) | Patterns read bar i and bar i−1; the polars seam normalizes NaN to null (it never fires here), the SQL `t_cdl*` warm-up is the leading null. `>= -200` predicate drops both identically. |
 
 **Cross-engine scan equality is therefore only claimed for sma-family
@@ -135,12 +162,15 @@ The polars engine executes the talib parity names via the same seam
   SQL `t_*` warm-up.
 - The same scanlang name covers **both** engines: `INDICATORS[name]`
   for polars, `SQL_INDICATORS[name]` for duckdb. Same `arg_spec`,
-  same `required_cols` (asserted by
+  same `required_cols` (asserted for every shared name by
   `tests/test_duckdb_sql.py::test_sql_registry_superset_of_indicators`).
 
 The seam is used by: `adx`, `kama`, `macd`, `bbands_upper`,
-`bbands_lower`, `aroon`, `cdlengulfing`, and the curated candlestick
-set (`_CDL_PARITY`, 25 further patterns). The two-tier
+`bbands_lower`, `aroon`, the wave-2 parity names (`adxr`, `cmo`, `trix`,
+`stochrsi`, `apo`, `ppo`, `mfi`, `adosc`, `ultosc`, `obv`, `midpoint`,
+`t3`, `sar`, `accbands_upper`, `accbands_lower`, `ht_dcperiod`,
+`ht_dcphase`), `cdlengulfing`, and the curated candlestick set
+(`_CDL_PARITY`, 25 further patterns). The two-tier
 (roon-bband) lowerings and the multi-output struct-narrowing are
 covered in the [duckdb backend reference](../reference/duckdb-backend.md#two-tier-lowering)
 (the SQL side). `stoch_k` / `stoch_d` are **SQL-only by design** (no
@@ -314,8 +344,8 @@ scanlang ships extras that gate the two engines' indicator coverage:
 | Extra | Pulls | Indicator coverage |
 | --- | --- | --- |
 | (default) | polars >= 1.44 | The built-in (`sma`, `ema`, `rsi`, `atr`, etc.), `wma`/`dema`/`tema`/`trima`/`mom`/`midprice`/`cci`/`willr`/`trange`/`ad`, and the temporal `rs_*` — all **polars-native** builders. |
-| `duckdb` | `duckdb >= 1.5` | The duckdb backend and its full `SQL_INDICATORS` registry (superset of `INDICATORS`). The community talib extension is loaded by `apply_sql` itself; no Python install. |
-| `talib` | `ta-lib >= 0.7.1` | The eager parity seam for `adx`, `kama`, `macd`, `bbands_*`, `aroon`, `cdlengulfing`, and the curated candlestick set. Required for those names on the polars engine. |
+| `duckdb` | `duckdb >= 1.5` | The duckdb backend and its `SQL_INDICATORS` registry (three DuckDB-only names: `ht_trendline`, `stoch_k`, `stoch_d`; the shared names mirror `INDICATORS`). The community talib extension is loaded by `apply_sql` itself; no Python install. |
+| `talib` | `ta-lib >= 0.7.1` | The eager parity seam for `adx`, `kama`, `macd`, `bbands_*`, `aroon`, the wave-2 parity names (`adxr`, `cmo`, `trix`, `stochrsi`, `apo`, `ppo`, `mfi`, `adosc`, `ultosc`, `obv`, `midpoint`, `t3`, `sar`, `accbands_*`, `ht_dcperiod`, `ht_dcphase`), `cdlengulfing`, and the curated candlestick set. Required for those names on the polars engine. |
 
 Install combinations:
 

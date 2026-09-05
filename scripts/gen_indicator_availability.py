@@ -108,6 +108,25 @@ _WARMUP: dict[str, int | None] = {
     "bbands_lower": None,
     "adx": 27,  # 2n - 1 for n=14
     "aroon": None,
+    # --- parity wave 2 (live-probed talib 0.7.1; matches the warm-up
+    # masks in tests/test_talib_parity.py::CASES at default-bound n) ---
+    "adxr": 40,
+    "cmo": None,  # n itself
+    "trix": 40,  # triple EMA-smoothed ROC
+    "stochrsi": 29,
+    "apo": 25,  # slow EMA(26) seed, n binds fastperiod=12
+    "ppo": 25,
+    "mfi": None,  # n itself
+    "adosc": 9,  # fast=3 / slow=10
+    "ultosc": 28,  # default 7/14/28 periods
+    "obv": 0,  # cumulative — OBV starts at 0, not null (talib semantic)
+    "midpoint": None,  # n - 1
+    "t3": 78,  # six-fold EMA cascade, vfactor 0.7
+    "sar": 1,
+    "accbands_upper": None,  # n - 1
+    "accbands_lower": None,
+    "ht_dcperiod": 32,  # Hilbert transform, talib documented
+    "ht_dcphase": 63,
     "ht_trendline": 63,  # dominant cycle, talib documented
     "stoch_k": None,
     "stoch_d": None,

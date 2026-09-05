@@ -6,29 +6,42 @@
 - `SQL_INDICATORS` contains DuckDB builders and is a superset of the polars
   registry.
 
-## Availability
+Most TA-Lib indicators share one name on both engines. The polars builders
+run exact TA-Lib values through an eager per-partition seam and need the
+optional `talib` extra (`uv add 'scanlang[talib]'`); the DuckDB builders use
+the community `talib` extension, loaded by `apply_sql` itself. Only
+`ht_trendline`, `stoch_k`, and `stoch_d` remain DuckDB-only.
 
-| Indicator | polars | DuckDB | DuckDB lowering |
-| --- | --- | --- | --- |
-| `sma` | yes | yes | native window |
-| `rmin`, `rmax`, `shift` | yes | yes | native window |
-| `ema` | yes | yes | `t_ema` |
-| `rsi` | yes | yes | `t_rsi` |
-| `atr` | yes | yes | `t_atr` |
-| `adr` | yes | yes | staged native windows |
-| `roc` | yes | yes | `t_roc` |
-| `natr` | yes | yes | `t_natr` |
-| `slope` | yes | yes | `t_linearreg_slope` |
-| `rs_ratio`, `rs_momentum` | yes | yes | smoothing plus window z-score |
-| `macd` | no | yes | `t_macd`, MACD line |
-| `bbands_upper`, `bbands_lower` | no | yes | `t_bbands` |
-| `adx` | no | yes | `t_adx` |
-| `aroon` | no | yes | `t_aroon`, up line |
-| `cdlengulfing` | no | yes | `t_cdlengulfing` |
-| `ht_trendline` | no | yes | `t_ht_trendline` |
+The full per-name table below is generated from the live registries:
 
-The engine passed to `validate` controls which names are accepted. Use
-`validate(scan_def, engine="duckdb")` for DuckDB-only indicators.
+```sh
+uv run python scripts/gen_indicator_availability.py
+```
+
+--8<-- "reference/_indicator_availability.md"
+
+The three DuckDB-only names (`ht_trendline`, `stoch_k`, `stoch_d`) are in the
+full table (`reference/_indicator_availability_full.md`); they have no polars
+builder.
+
+For `ema`, `rsi`, and `atr`, the two engines converge after warm-up rather
+than agreeing bar-for-bar (TA-Lib SMA seeding vs. first-value seeding). The
+parity names (`adx`, `macd`, `bbands_*`, `aroon`, `kama`, `wma`, `dema`,
+`tema`, `trima`, `mom`, `midprice`, `cci`, `willr`, `trange`, `ad`, and the
+curated candlestick set) are exact TA-Lib values on both engines, bar-for-bar.
+See the warm-up table in `reference/indicators.md` for the per-family counts.
+
+## Multi-output field names
+
+Multi-output TA-Lib functions are narrowed to one scalar per scanlang name —
+never a struct through the IR:
+
+| scanlang name | TA-Lib function | Field exposed |
+| --- | --- | --- |
+| `macd` | `MACD(close, fast, 26, 9)` | `macd` (the MACD line; signal and histogram derivable) |
+| `bbands_upper` / `bbands_lower` | `BBANDS(close, n, 2.0, 2.0, 0)` | `upperband` / `lowerband` (middle band is `sma`) |
+| `aroon` | `AROON(high, low, n)` | `aroon_up` |
+| `stoch_k` / `stoch_d` | `STOCH(high, low, close, ...)` | `slowk` / `slowd` |
 
 ## Signatures
 
@@ -51,13 +64,10 @@ expression unless noted otherwise. `ema(20)`, `sma(20)`, `rmin(20)`, and
 | `shift` | `shift(expr, n)` | previous value |
 | `rs_ratio` | `rs_ratio(expr, n)` | EMA(5), then trailing z-score |
 | `rs_momentum` | `rs_momentum(expr, n)` | 4-bar ROC, EMA(3), then trailing z-score |
-| `macd` | `macd(n)` | DuckDB MACD line |
-| `bbands_upper` | `bbands_upper(n)` | DuckDB upper Bollinger band |
-| `bbands_lower` | `bbands_lower(n)` | DuckDB lower Bollinger band |
-| `adx` | `adx(n)` | DuckDB average directional index |
-| `aroon` | `aroon(n)` | DuckDB Aroon up line |
-| `cdlengulfing` | `cdlengulfing(n)` | DuckDB engulfing candlestick match |
-| `ht_trendline` | `ht_trendline(n)` | DuckDB Hilbert transform trendline |
+
+All remaining parity names follow the TA-Lib reference signature
+(`macd(n)`, `bbands_upper(n)`, `adx(n)`, `aroon(n)`, `cdlengulfing()`, etc.) — the generated availability table lists
+each name's args and required columns.
 
 Indicators can nest:
 
@@ -70,17 +80,10 @@ Indicators can nest:
 
 ## DuckDB-only indicators
 
-DuckDB uses its community `talib` extension for indicators that do not have a
-polars builder. Multi-output functions are narrowed to useful scan fields:
-
-- `macd` is the MACD line. Its signal and histogram can be derived from it.
-- `bbands_upper` and `bbands_lower` expose the two bands; the middle band is
-  `sma`.
-- `aroon` exposes the up line.
-- `cdlengulfing` returns TA-Lib's `0` or `100` match value.
-
-Use these names with `compile_sql` or `apply_sql`, and validate with
-`engine="duckdb"`. The polars engine rejects them.
+`ht_trendline`, `stoch_k`, and `stoch_d` use the community `talib` extension
+and have no polars builder. Use these names with `compile_sql` or
+`apply_sql`, and validate with `engine="duckdb"`. The polars engine rejects
+them with `indicator '<name>' requires engine='duckdb'`.
 
 ## Semantics
 
@@ -104,7 +107,8 @@ exists. A zero-variance window returns `100.0`. Results are clamped to
 
 For a polars indicator, add `(arg_spec, builder, required_cols)` to
 `INDICATORS`. For a DuckDB-only indicator, add the same shape to
-`SQL_INDICATORS`. Keep the engine-specific validation and availability table
-in sync.
+`SQL_INDICATORS`. To make a name dual-engine, register it in both with
+identical `arg_spec` and `required_cols`. The generated availability table
+picks the change up on the next run.
 
 See [API](reference/api.md) for the registry objects and callable signatures.

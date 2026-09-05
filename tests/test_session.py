@@ -89,7 +89,8 @@ def test_materialized_requires_apply():
 def test_seam_indicator_raises_in_materialize():
     bars = _bars()
     sl = Scan(bars)
-    with pytest.raises(ValueError, match="talib seam"):
+    # talib present -> the not-an-Expr seam guard; talib absent -> install hint
+    with pytest.raises(ValueError, match="talib seam|talib' extra"):
         _ = materialize(bars, "adx(14) > 20", catalog=sl.catalog)
 
 

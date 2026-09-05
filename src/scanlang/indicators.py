@@ -274,11 +274,13 @@ def _ultosc(n=None, partition: str = "symbol"):
 
     ULTOSC takes ``timeperiod1/2/3`` (semantic 7/14/28 defaults), no single
     bindable ``timeperiod`` — the dummy-int precedent (trange/ad): the
-    user-facing n is accepted and ignored.
+    user-facing n is accepted and ignored. talib imports at bind time so
+    registry insertion stays talib-free (test_talib_missing.py contract).
     """
-    import talib
 
     def _apply(df: pl.DataFrame) -> pl.DataFrame:
+        import talib
+
         arr = talib.ULTOSC(
             df["high"].to_numpy(), df["low"].to_numpy(), df["close"].to_numpy()
         )
@@ -291,10 +293,12 @@ def _obv(n=None, partition: str = "symbol"):
     """talib OBV per partition via the seam (periodless: OBV(real, volume)).
 
     OBV starts at 0, not null — talib semantic (cumulative), no warm-up.
+    talib imports at bind time so registry insertion stays talib-free.
     """
-    import talib
 
     def _apply(df: pl.DataFrame) -> pl.DataFrame:
+        import talib
+
         arr = talib.OBV(df["close"].to_numpy(), df["volume"].to_numpy())
         return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
 
@@ -308,11 +312,13 @@ def _sar(n=None, partition: str = "symbol"):
     defaults), not a bar period — no bindable ``timeperiod`` (dummy-int
     precedent). SAR is stateful across the whole partition; unlike the
     other seams it has NO null warm-up (first bar is null via fill_nan,
-    everything after is defined).
+    everything after is defined). talib imports at bind time so registry
+    insertion stays talib-free.
     """
-    import talib
 
     def _apply(df: pl.DataFrame) -> pl.DataFrame:
+        import talib
+
         arr = talib.SAR(df["high"].to_numpy(), df["low"].to_numpy())
         return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
 
@@ -326,12 +332,14 @@ def _ht_cycle(fn: str):
     period (the dummy-int precedent, ht_trendline); their warm-up is the
     transform's fixed internal window (32/63 bars — pinned in the parity
     tests), not a bindable n. One factory, like _cdl: a future ht_* wave
-    (phasor/sine) is a one-line registration.
+    (phasor/sine) is a one-line registration. talib imports at bind time
+    so registry insertion stays talib-free.
     """
-    import talib
 
     def build(_n=None, partition: str = "symbol"):
         def _apply(df: pl.DataFrame) -> pl.DataFrame:
+            import talib
+
             arr = getattr(talib, fn)(df["close"].to_numpy())
             return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
 

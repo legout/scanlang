@@ -14,17 +14,20 @@ from scanlang.compiler import (
 from scanlang.dsl import parse
 from scanlang.indicators import INDICATORS
 from scanlang.scoring import score_bars
+from scanlang.session import Scan, materialize
 from scanlang.stats import HORIZONS, backtest_summary, forward_stats
 
 __all__ = [
     "HORIZONS",
     "INDICATORS",
     "PROPERTY_CATALOG",
+    "Scan",
     "apply",
     "backtest_summary",
     "catalog_from_schema",
     "compile",
     "forward_stats",
+    "materialize",
     "parse",
     "score_bars",
     "validate",

@@ -34,7 +34,13 @@ def _fn_exprs(spec: dict, *, catalog: dict, partition: str, exprs: list, seen: s
         n = next((a for tag, a in zip(arg_spec, spec["args"]) if tag == "int"), "")
         alias = f"{spec['fn']}_{n}"
         if alias not in seen:
-            built = builder(*parsed, partition=partition)
+            try:
+                built = builder(*parsed, partition=partition)
+            except ImportError as e:
+                raise ValueError(
+                    f"indicator {spec['fn']!r} requires the optional 'talib' extra "
+                    "(pip install 'scanlang[talib]')"
+                ) from e
             if not isinstance(built, pl.Expr):
                 raise ValueError(
                     f"indicator {spec['fn']!r} (talib seam) cannot be materialized; use apply()"

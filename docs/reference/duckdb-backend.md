@@ -38,7 +38,7 @@ talib extension.
 | Tier | Indicators | Form |
 | --- | --- | --- |
 | Native window | `sma`, `rmin`, `rmax`, `shift`, `adr` | `AVG` / `MIN` / `MAX` / `LAG OVER (PARTITION BY ... ORDER BY ... ROWS BETWEEN ...)` with a `count`-guard so warm-up rows are NULL exactly like polars `rolling_*` |
-| talib `t_*` scalar | `ema`, `rsi`, `atr`, `roc`, `natr`, `slope`, plus the duckdb-only names | Per-partition list CTE, `t_fn` over the lists, `unnest` back to row-aligned output |
+| talib `t_*` scalar | `ema`, `rsi`, `atr`, `roc`, `natr`, `slope`, `macd`, `bbands_upper`, `bbands_lower`, `adx`, `aroon`, `kama`, `ht_trendline`, `stoch_k`, `stoch_d`, `wma`, `dema`, `tema`, `trima`, `mom`, `midprice`, `cci`, `willr`, `trange`, `ad` | Per-partition list CTE, `t_fn` over the lists, `unnest` back to row-aligned output. Multi-output `t_*` functions (`macd`, `bbands`, `aroon`, `stoch`) are struct-narrowed to one field per scanlang name (see [Multi-output field names](indicators.md#multi-output-field-names) in the indicators reference). |
 
 `adr` is a two-step window (true range needs `lag(close)`, and window
 functions cannot nest). The builder stages TR as its own CTE before
@@ -108,16 +108,19 @@ keyword:
 | `"polars"` (default) | Every name in `INDICATORS`; rejects talib-only names with `indicator '<name>' requires engine='duckdb'` |
 | `"duckdb"` | Every name in `SQL_INDICATORS` (a strict superset of `INDICATORS`); accepts the talib-only names |
 
-The polars engine never executes the talib-only names — they are
-duckdb-only by construction (no entry in `INDICATORS`). `compile` and
+The polars engine never executes the duckdb-only names (`ht_trendline`,
+`stoch_k`, `stoch_d`) — they have no entry in `INDICATORS`. `compile` and
 `apply` still emit polars plans only: when `engine="duckdb"` widens
-name validation to include a talib-only name, the `INDICATORS`
+name validation to include a duckdb-only name, the `INDICATORS`
 lowering path has no builder for it and raises `KeyError: '<name>'`
 at `compiler._operand` (`INDICATORS[spec["fn"]]` lookup) — no
-`ValueError`, no plan. The duckdb-only names (`macd`, `bbands_*`,
-`adx`, `aroon`, `cdlengulfing`, `ht_trendline`) must therefore route
+`ValueError`, no plan. The duckdb-only names must therefore route
 through `compile_sql` / `apply_sql` — the SQL backend is the only path
-that can plan and execute them. `compile`, `apply`, and `apply_sql`
+that can plan and execute them. The formerly duckdb-only names (`macd`,
+`bbands_*`, `adx`, `aroon`, `kama`, `cdlengulfing`, plus the curated
+`_CDL_PARITY` candlestick set) now have `INDICATORS` parity builders
+(the talib extra's eager map_groups seam) and run on both engines.
+`compile`, `apply`, and `apply_sql`
 all accept the same `engine=` kwarg for consistency; the engine only
 widens the name allowlist, it does not retarget polars to emit SQL.
 
@@ -139,12 +142,16 @@ positional and must stay in lockstep with the assembled SQL.
 
 `SQL_INDICATORS` is a strict superset of `INDICATORS`: the entries
 shared between the two have identical `arg_spec` and `required_cols`.
-The duckdb-only entries (`macd`, `bbands_upper`, `bbands_lower`, `adx`,
-`aroon`, `cdlengulfing`, `ht_trendline`) exist only in
-`SQL_INDICATORS`; they have no polars-builder equivalent.
+The duckdb-only entries (`ht_trendline`,
+`stoch_k`, `stoch_d`) exist only in
+`SQL_INDICATORS`; they have no polars-builder equivalent (the seam
+names `macd`, `bbands_upper`, `bbands_lower`, `aroon`, `adx`, `kama`,
+`cdlengulfing`, and the `_CDL_PARITY` candlestick set
+are shared).
 
-Multi-output `t_*` functions (`macd`, `bbands`, `aroon`) are narrowed
-to one series at the SQL level:
+Multi-output `t_*` functions (`macd`, `bbands`, `aroon`, `stoch`) are
+narrowed to one series at the SQL level — the same field the polars
+seam builders select:
 
 - `macd` -> the MACD line (`fast EMA - slow EMA`); signal and
   histogram are derived from it

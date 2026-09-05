@@ -17,10 +17,12 @@ arg is corpus order (n, expr) and normalizes to canonical (expr, n) —
 sma(200, close(22)) -> sma(shift(close, 22), 200), slope(10, sma(200)) ->
 slope(sma(close, 200), 10), max(252, close) -> rmax(close, 252).
 
-Talib-only indicator names (macd, bbands_upper/lower, adx, aroon,
-cdlengulfing, ht_trendline — SQL_INDICATORS registry) parse as fn calls
+Talib-only indicator names (macd, bbands_upper/lower, aroon,
+ht_trendline — SQL_INDICATORS registry) parse as fn calls
 too; validate() stays the single gate for engine fit (the polars engine
-rejects them). Grammar rule: ``name`` in EITHER registry resolves as an
+rejects them). ``adx`` also parses here and is dual-engine — its
+INDICATORS parity builder (the ``talib`` extra) validates on the polars
+engine too. Grammar rule: ``name`` in EITHER registry resolves as an
 indicator call before the column-lookback fallback.
 """
 

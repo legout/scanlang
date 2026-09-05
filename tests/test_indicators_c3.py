@@ -113,14 +113,35 @@ def _adx_scan():
             }
 
 
+def _aroon_scan():
+    return {"filters": [{"property": {"fn": "aroon", "args": [14]},
+                         "op": ">", "value": 50}],
+            }
+
+
 def test_sql_only_indicator_rejected_on_polars():
-    errs = validate(_adx_scan(), catalog=OHLC_CATALOG)
-    assert "filters[0].property: indicator 'adx' requires engine='duckdb'" in errs
-    assert "filters[0].property: indicator 'adx' requires column 'high'" not in errs
+    """stoch_k is the SQL-only example; cdlengulfing/aroon/macd are dual-engine now."""
+    errs = validate({"filters": [{"property": {"fn": "stoch_k", "args": [5, 3, 3]},
+                                  "op": ">", "value": 0}]}, catalog=OHLC_CATALOG)
+    assert "filters[0].property: indicator 'stoch_k' requires engine='duckdb'" in errs
+    assert "filters[0].property: indicator 'stoch_k' requires column 'high'" not in errs
+    # cdlengulfing is dual-engine since the candlestick-parity card (its
+    # catalog shape — arg_spec/required_cols — is unchanged); the polars
+    # engine rejects it only on missing catalog cols now
+    eng = validate({"filters": [{"property": {"fn": "cdlengulfing", "args": [14]},
+                                 "op": ">", "value": 0}]})
+    # all three required-col errors, in required_cols order (no engine error)
+    assert eng == [
+        f"filters[0].property: indicator 'cdlengulfing' requires column {c!r}"
+        for c in ("open", "high", "low")
+    ]
+    # aroon is dual-engine (INDICATORS parity builder): validates on polars
+    # when the catalog carries its required cols
+    assert validate(_aroon_scan(), catalog=OHLC_CATALOG) == []
 
 
 def test_sql_only_indicator_ok_on_duckdb():
-    assert validate(_adx_scan(), catalog=OHLC_CATALOG, engine="duckdb") == []
+    assert validate(_aroon_scan(), catalog=OHLC_CATALOG, engine="duckdb") == []
     assert validate({"filters": [
         {"property": {"fn": "macd", "args": [12]}, "op": ">", "value": 0},
         {"property": {"fn": "bbands_upper", "args": [20]}, "op": ">", "value": {"col": "close"}},
@@ -133,7 +154,18 @@ def test_sql_only_indicator_ok_on_duckdb():
 
 def test_sql_only_never_compiles_on_polars():
     with pytest.raises(ValueError, match="requires engine='duckdb'"):
-        compile(_adx_scan())
+        compile({"filters": [{"property": {"fn": "stoch_k", "args": [5, 3, 3]},
+                              "op": ">", "value": 0}]}, catalog=OHLC_CATALOG)
+
+
+def test_adx_dual_engine_validate():
+    """adx is the parity slice: validates on BOTH engines (INDICATORS builder)."""
+    errs = validate(_adx_scan(), catalog=OHLC_CATALOG, engine="polars")
+    assert errs == []
+    assert validate(_adx_scan(), catalog=OHLC_CATALOG, engine="duckdb") == []
+    # missing high/low/close still surfaces on either engine (required_cols)
+    bad = {"filters": [{"property": {"fn": "adx", "args": [14]}, "op": ">", "value": 20}]}
+    assert "indicator 'adx' requires column 'high'" in validate(bad)[0]
 
 
 def test_engine_kwarg_default_unchanged():

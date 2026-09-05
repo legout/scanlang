@@ -26,8 +26,10 @@ operands — dtype mismatches there surface at collect time.
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import operator
+from collections.abc import Callable
 from functools import reduce
 
 import polars as pl
@@ -124,12 +126,46 @@ def _operand(spec, *, catalog: dict, partition: str) -> pl.Expr:
         if "col" in spec:
             return pl.col(spec["col"])
         if "fn" in spec:
-            arg_spec, builder, _req = INDICATORS[spec["fn"]]
-            parsed = [
-                a if tag == "int" else _operand(a, catalog=catalog, partition=partition)
-                for tag, a in zip(arg_spec, spec["args"])
-            ]
-            return builder(*parsed, partition=partition)
+            entry = INDICATORS.get(spec["fn"])
+            if entry is None:
+                # validated only under engine="duckdb" (SQL_INDICATORS name):
+                # the polars compiler has no lowering for it — compile_sql/apply_sql
+                raise ValueError(
+                    f"indicator {spec['fn']!r} is SQL-only — compile()/apply() lower "
+                    "polars predicates; use compile_sql()/apply_sql()"
+                )
+            arg_spec, builder, _req = entry
+            if sum(tag == "int" for tag in arg_spec) > 1:
+                # multiple int slots (stoch_k/stoch_d): the builder gets one
+                # list of all of them in place of the individual ints
+                ints = [a for tag, a in zip(arg_spec, spec["args"]) if tag == "int"]
+                parsed = [
+                    ints if tag == "int" else _operand(a, catalog=catalog, partition=partition)
+                    for tag, a in zip(arg_spec, spec["args"])
+                ]
+            else:
+                parsed = [
+                    a if tag == "int" else _operand(a, catalog=catalog, partition=partition)
+                    for tag, a in zip(arg_spec, spec["args"])
+                ]
+            try:
+                built = builder(*parsed, partition=partition)
+            except ImportError as e:
+                # optional talib parity builders (adx, macd, bbands_*, aroon,
+                # kama) — the extra is not installed
+                raise ValueError(
+                    f"indicator {spec['fn']!r} requires the optional 'talib' extra "
+                    "(pip install 'scanlang[talib]')"
+                ) from e
+            if not isinstance(built, pl.Expr):
+                # talib parity builders (adx and friends) return
+                # DataFrame -> DataFrame callables
+                # for group_by(partition, maintain_order=True).map_groups — eager
+                # only. apply() pre-stages the reserved ``__adx`` column; a bare
+                # compile() targets that column (apply() compiles a rewritten
+                # deep copy of the scan def), so this still validates AND compiles.
+                return pl.col("__adx")
+            return built
         key = next(k for k in spec if k in _ARITH)
         vals = [_operand(a, catalog=catalog, partition=partition) for a in spec[key]]
         if len(vals) == 1:  # unary fold; freeze names only negate: {"-": [x]}
@@ -307,10 +343,15 @@ def validate(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, engine: str = 
     computed operands (a wrong-dtype join surfaces at collect time).
 
     With ``engine="duckdb"`` indicator names that exist only in
-    ``scanlang.duckdb_sql.SQL_INDICATORS`` (``macd``, ``bbands_upper``,
-    ``bbands_lower``, ``adx``, ``aroon``, ``cdlengulfing``,
-    ``ht_trendline``) validate OK; under the default ``engine="polars"``
-    they produce ``indicator 'adx' requires engine='duckdb'``.
+    ``scanlang.duckdb_sql.SQL_INDICATORS`` (``cdlengulfing``,
+    ``ht_trendline``, ``stoch_k``, ``stoch_d``) validate OK; under the
+    default ``engine="polars"`` they produce ``indicator 'aroon' requires
+    engine='duckdb'``. ``adx``, ``kama``, ``macd``, ``bbands_upper``,
+    ``bbands_lower``, and ``aroon`` are dual-engine: they have
+    ``INDICATORS`` parity builders (the ``talib`` extra, applied via
+    group_by/map_groups over the partition) as well as ``SQL_INDICATORS``
+    lowerings, so they validate under both engines
+    without the duckdb-only error.
 
     Args:
         scan_def: A scan-def dict (``{"filters": [...], "order_by": ...,
@@ -378,6 +419,43 @@ def _compile_node(node, *, catalog: dict, partition: str) -> pl.Expr:
     if "not" in node:
         return ~_compile_node(node["not"], catalog=catalog, partition=partition)
     return _compile_leaf(node, catalog=catalog, partition=partition)
+
+
+# --- eager-only parity indicators (the talib extra) --------------------------
+
+
+def _eager_fn_nodes(nodes, found: list[dict]) -> None:
+    """Collect every ``{"fn": ...}`` operand dict into ``found`` (recursive).
+
+    Walks exactly what ``_operand`` reaches: logical nodes (``all``/``any``/
+    ``not``), the filter's ``property`` and ``value`` operands, fn ``args``
+    and arithmetic trees — so ``apply()`` stages every eager builder the
+    compiled predicate can reference, in any operand position.
+    """
+    for nd in nodes or []:
+        if not isinstance(nd, dict):
+            continue
+        if "not" in nd:
+            _eager_fn_nodes([nd["not"]], found)
+        elif "all" in nd or "any" in nd:
+            _eager_fn_nodes(nd.get("all") or nd.get("any"), found)
+        else:
+            _eager_fn_operands(nd.get("property"), found)
+            _eager_fn_operands(nd.get("value"), found)
+
+
+def _eager_fn_operands(spec, found: list[dict]) -> None:
+    """Collect ``{"fn": ...}`` operand dicts under one operand spec."""
+    if not isinstance(spec, dict):
+        return
+    if "fn" in spec:
+        found.append(spec)
+        args = spec.get("args") or []  # nested fn args recurse
+        for a in args:
+            _eager_fn_operands(a, found)
+    elif key := next((k for k in spec if k in _ARITH), None):
+        for a in spec[key]:
+            _eager_fn_operands(a, found)
 
 
 def compile(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, partition: str = "symbol", engine: str = "polars") -> pl.Expr:
@@ -460,7 +538,54 @@ def apply(frame: pl.DataFrame | pl.LazyFrame, scan_def: dict, *, catalog: dict =
         │ A      ┆ 60    │
         └────────┴───────┘
     """
-    out = frame.filter(compile(scan_def, catalog=catalog, partition=partition, engine=engine))
+    # talib parity indicators (adx: group_by(partition).map_groups) are
+    # eager-only — probe each fn's builder (the full operand grammar, via the
+    # deep copy below): a non-Expr return is the seam, so its column is
+    # pre-staged here and the predicate compiles against the materialized
+    # alias. A LazyFrame input cannot run the seam (no lazy map_groups), so
+    # it fails with the install hint instead.
+    staged_def = copy.deepcopy(scan_def)  # staging rewrites the copy's fn
+    fn_nodes: list[dict] = []  # dicts in place; the caller's scan_def stays intact
+    _eager_fn_nodes(staged_def.get("filters") or [], fn_nodes)
+    eager: list[tuple[dict, Callable]] = []
+    for prop in fn_nodes:
+        entry = INDICATORS.get(prop["fn"])
+        if entry is None:
+            continue  # unknown fn — compile() raises the real error
+        arg_spec, builder, _req = entry
+        try:
+            if sum(tag == "int" for tag in arg_spec) > 1:  # stoch_k/stoch_d: tuple of ints
+                ints = [a for tag, a in zip(arg_spec, prop["args"]) if tag == "int"]
+                built = builder(
+                    *(ints if tag == "int" else pl.col("_") for tag, a in zip(arg_spec, prop["args"])),
+                    partition=partition,
+                )
+            else:
+                built = builder(
+                    *(a if tag == "int" else pl.col("_") for tag, a in zip(arg_spec, prop["args"])),
+                    partition=partition,
+                )
+        except ImportError:
+            continue  # missing talib extra — compile() reports the install hint
+        if not isinstance(built, pl.Expr):
+            eager.append((prop, built))
+    if eager and not isinstance(frame, pl.DataFrame):
+        raise ValueError(
+            f"indicator {eager[0][0]['fn']!r} requires the optional 'talib' extra "
+            "(pip install 'scanlang[talib]') and an eager frame — collect() first"
+        )
+    staged = frame
+    cat = dict(catalog)
+    for j, (prop, apply_fn) in enumerate(eager):
+        alias = f"__{prop['fn']}_{j}"
+        staged = (
+            staged.group_by(partition, maintain_order=True)
+            .map_groups(lambda g, fn=apply_fn, a=alias: fn(g).rename({"__adx": a}))
+        )
+        prop.clear()
+        prop["col"] = alias
+        cat[alias] = {"label": alias, "dtype": "float"}  # talib output is Float64
+    out = staged.filter(compile(staged_def, catalog=cat, partition=partition, engine=engine))
     order_by = scan_def.get("order_by") or []
     if order_by:
         keys = [ob["property"] for ob in order_by]

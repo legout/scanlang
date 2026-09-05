@@ -30,12 +30,15 @@ stays polars-only):
   diverge for ``ema`` by design (the accepted warm-up contract, Q1 of the
   2026-09-02 plan; hit-set equality is therefore only claimed for
   sma-family scans).
-- duckdb-only (talib extension, no polars builder):
-  ``macd`` (the MACD line), ``bbands_upper``/``bbands_lower`` (two entries —
-  bands are scanned as thresholds; the middle band is just ``sma``),
-  ``adx``, ``aroon`` (the up line), ``cdlengulfing`` (0/1 talib integer),
-  ``ht_trendline``. Multi-output ``t_*`` functions return lists of structs;
-  the builders narrow them to one struct field in SQL.
+- duckdb-side multi-output narrowing (``macd``, ``bbands_upper``/
+  ``bbands_lower``, ``aroon``, ``stoch_k``/``stoch_d``): multi-output
+  ``t_*`` functions return lists of structs; the builders narrow them to
+  one struct field in SQL, and the same scanlang names now ALSO have
+  polars parity builders in ``INDICATORS`` (the group_by/map_groups
+  seam — exact TA-Lib values), so they validate and execute on both
+  engines like ``adx``/``kama``. ``ht_trendline`` remains duckdb-only;
+  ``cdlengulfing`` and the curated candlestick set (``_CDL_PARITY``)
+  run on both engines (see ``indicators``).
   [`validate(..., engine="duckdb")`](api.md#scanlang.compiler.validate)
   accepts these names — the polars engine rejects them.
 
@@ -68,7 +71,7 @@ from collections.abc import Callable
 import polars as pl
 
 from scanlang.compiler import PROPERTY_CATALOG, _collect
-from scanlang.indicators import _RS_MOM_LOOKBACK, _RS_MOM_SPAN, _RS_SPAN
+from scanlang.indicators import _RS_MOM_LOOKBACK, _RS_MOM_SPAN, _RS_SPAN, _cdl_names
 
 __all__ = ["SQL_INDICATORS", "apply_sql", "compile_sql"]
 
@@ -189,6 +192,24 @@ def _aroon(x, n: int, p: str, o: str, params: list) -> str:
     )
 
 
+def _stoch(side: str):
+    def build(x, n, p: str, o: str, params: list) -> str:
+        # n = (fastk, slowk, slowd); ma_type slots stay at talib default 0.
+        # fn() passes n as a list for multi-tag arg_specs (see the compiler).
+        fastk, slowk, slowd = n
+        params.extend((fastk, slowk, 0, slowd, 0))
+        cols = (f"list({_q(c)} ORDER BY {_q(o)})" for c in ("high", "low", "close"))
+        return (
+            f"{{'{side}': unnest(t_stoch("
+            f"{', '.join(cols)}, "
+            "CAST(? AS INTEGER), CAST(? AS INTEGER), CAST(? AS INTEGER), "
+            "CAST(? AS INTEGER), CAST(? AS INTEGER)))"
+            f"['{side}']}}"
+        )
+
+    return build
+
+
 def _raw_tfn(list_frag: str) -> str:
     """Raw ``t_*`` call inside a ``{'field': ...}`` list_frag (for the inner alias)."""
     i = list_frag.index("unnest(") + len("unnest(")
@@ -207,8 +228,26 @@ def _adx(x, n: int, p: str, o: str, params: list) -> str:
     return _tcol("t_adx", n, p, o, params, ("high", "low", "close"))
 
 
-def _cdlengulfing(x, n, p: str, o: str, params: list) -> str:
-    return _tcol("t_cdlengulfing", None, p, o, params, ("open", "high", "low", "close"))
+def _kama(x, n: int, p: str, o: str, params: list) -> str:
+    return _tcol("t_kama", n, p, o, params, ("close",))
+
+
+def _ht_trendline(x, n, p: str, o: str, params: list) -> str:
+    return _tcol("t_ht_trendline", None, p, o, params, ("close",))
+
+
+def _cdl(name: str):
+    """``t_cdl*`` lowering for one candlestick pattern (mirrors ``indicators._cdl``).
+
+    Patterns read (open, high, low, close) and take no period — ``n`` rides
+    along unbound (the dummy-int precedent). All names lower identically, so
+    the registry loop closes over one factory.
+    """
+
+    def build(x, n, p: str, o: str, params: list) -> str:
+        return _tcol(f"t_{name.lower()}", None, p, o, params, ("open", "high", "low", "close"))
+
+    return build
 
 
 def _ht_trendline(x, n, p: str, o: str, params: list) -> str:
@@ -291,14 +330,14 @@ def _rs_smooth_router(x, n, p, o, params):
 # name -> (arg_spec, sql_builder, required_cols) — mirrors INDICATORS' contract.
 # The entry shape is the extension point for the SQL engine.
 #
-# duckdb-only entries (macd, bbands, adx, aroon, cdlengulfing, ht_trendline)
-# have no polars builder: validate(engine="duckdb") accepts them, the polars
-# engine rejects them. Multi-output t_* functions are narrowed to one series
-# at the SQL level: macd -> the MACD line (fast EMA - slow EMA, the
-# conventional "MACD" value; signal/hist are derived from it), bbands ->
-# upper AND lower as two entries (bands are scanned as thresholds; no single
-# "primary" band), aroon -> aroon_up (the trend-strength signal; aroon_down
-# is its mirror for short setups, add as its own entry if ever needed).
+# ``macd``, ``bbands_upper``/``bbands_lower``, ``aroon``, and
+# ``stoch_k``/``stoch_d`` narrow multi-output ``t_*`` structs to one
+# field per scanlang name in SQL; the first three ALSO have polars
+# parity builders in ``INDICATORS`` (the talib extra's map_groups
+# seam, exact TA-Lib values) — dual-engine names. stoch_k/stoch_d
+# stay SQL-only by design; ``ht_trendline`` remains duckdb-only, while
+# ``cdlengulfing`` and the ``_CDL_PARITY`` candlestick set are
+# dual-engine (same name set on both registries).
 SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "sma": (("expr", "int"), lambda x, n, p, o, pa: _win(x, n, p, o, pa, "AVG"), ()),
     "rmin": (("expr", "int"), lambda x, n, p, o, pa: _win(x, n, p, o, pa, "MIN"), ()),
@@ -311,14 +350,37 @@ SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "roc": (("expr", "int"), _roc, ()),
     "natr": (("expr", "int"), _natr, ("high", "low", "close")),
     "slope": (("expr", "int"), _slope_sql, ()),
+    # --- 0.4.0 single-output TA-Lib parity set (mirrors the INDICATORS entries) ---
+    "wma": (("expr", "int"), lambda x, n, p, o, pa: _tcall("t_wma", x, n, o, pa), ()),
+    "dema": (("expr", "int"), lambda x, n, p, o, pa: _tcall("t_dema", x, n, o, pa), ()),
+    "tema": (("expr", "int"), lambda x, n, p, o, pa: _tcall("t_tema", x, n, o, pa), ()),
+    "trima": (("expr", "int"), lambda x, n, p, o, pa: _tcall("t_trima", x, n, o, pa), ()),
+    "mom": (("expr", "int"), lambda x, n, p, o, pa: _tcall("t_mom", x, n, o, pa), ()),
+    "midprice": (("int",), lambda x, n, p, o, pa: _tcol("t_midprice", n, p, o, pa, ("high", "low")), ("high", "low")),
+    "cci": (("int",), lambda x, n, p, o, pa: _tcol("t_cci", n, p, o, pa, ("high", "low", "close")), ("high", "low", "close")),
+    "willr": (("int",), lambda x, n, p, o, pa: _tcol("t_willr", n, p, o, pa, ("high", "low", "close")), ("high", "low", "close")),
+    # dummy-int precedent (ht_trendline): t_trange takes no period; n is ignored
+    "trange": (("int",), lambda x, n, p, o, pa: _tcol("t_trange", None, p, o, pa, ("high", "low", "close")), ("high", "low", "close")),
+    "ad": ((), lambda x, n, p, o, pa: _tcol("t_ad", None, p, o, pa, ("high", "low", "close", "volume")), ("high", "low", "close", "volume")),
+    "kama": (("int",), _kama, ("close",)),
     # duckdb-only (talib extension): not in INDICATORS
     "macd": (("int",), _macd, ("close",)),
     "bbands_upper": (("int",), _bband("upper"), ("close",)),
     "bbands_lower": (("int",), _bband("lower"), ("close",)),
     "adx": (("int",), _adx, ("high", "low", "close")),
     "aroon": (("int",), _aroon, ("high", "low")),
-    "cdlengulfing": (("int",), _cdlengulfing, ("open", "high", "low", "close")),
     "ht_trendline": (("int",), _ht_trendline, ("close",)),
+    "stoch_k": (("int", "int", "int"), _stoch("slowk"), ("high", "low", "close")),
+    "stoch_d": (("int", "int", "int"), _stoch("slowd"), ("high", "low", "close")),
+    # candlestick-pattern parity: same dummy-int contract as cdlengulfing,
+    # for the curated value-parity intersection (indicators._CDL_PARITY).
+    # cdlengulfing rides the loop too: the generic _cdl("cdlengulfing") emits
+    # exactly its 0.3.0 lowering (_tcol("t_cdlengulfing", ...)), one factory,
+    # one name set, zero special cases.
+    **{
+        name.lower(): (("int",), _cdl(name), ("open", "high", "low", "close"))
+        for name in _cdl_names()
+    },
     # temporal z-score RS normalization (special two-stage lowering in fn())
     "rs_ratio": (("expr", "int"), _rs_smooth_router, ()),
     "rs_momentum": (("expr", "int"), _rs_smooth_router, ()),
@@ -331,15 +393,19 @@ required_cols), but builders emit SQL fragments instead of ``pl.Expr`` and
 take ``(x, n, partition, order_column, params)``. Extend by insertion —
 ``SQL_INDICATORS["roc"] = (("int",), builder, ())``.
 
-This registry is a superset of ``INDICATORS``: the talib-only names
-``macd``, ``bbands_upper``, ``bbands_lower``, ``adx``, ``aroon``,
-``cdlengulfing``, and ``ht_trendline`` exist here and nowhere in
-``INDICATORS`` — they run only on the duckdb engine (the community talib
-extension provides the ``t_*`` functions).
+This registry is a superset of ``INDICATORS``: the duckdb-only names
+``ht_trendline``, ``stoch_k``, and ``stoch_d`` exist
+here and nowhere in ``INDICATORS`` — they run only on the duckdb engine
+(the community talib extension provides the ``t_*`` functions). The
+curated candlestick set rides the shared ``_cdl_names()`` loop and is
+deliberately dual-engine.
 [``validate(..., engine="duckdb")``](api.md#scanlang.compiler.validate)
 accepts them; the polars engine rejects them with
-``indicator 'adx' requires engine='duckdb'``. All other names mirror an
-``INDICATORS`` entry 1:1 (same arg_spec, same required_cols).
+``indicator 'aroon' requires engine='duckdb'`` (using ``stoch_k``
+as the example). All other names mirror an ``INDICATORS`` entry 1:1
+(same arg_spec, same required_cols) — the eager-seam parity names
+included, via their dual-engine INDICATORS builders (the ``talib``
+extra's group_by/map_groups seam).
 """
 
 
@@ -595,21 +661,23 @@ class _Gen:
         name = spec["fn"]
         arg_spec, builder, req = SQL_INDICATORS[name]
         self.cols.update(req)
-        pos, n = [], None
+        pos = []
+        ints: list[int] = []
         outer_sink, self.sink = self.sink, self.params  # fn args render in CTE text
         try:
             for tag, a in zip(arg_spec, spec["args"]):
                 if tag == "int":
-                    n = a
+                    ints.append(a)
                 else:
                     pos.append(self.operand(a))
+            n = ints[0] if len(ints) == 1 else tuple(ints)
             alias = f"c{self.n}"
             if name in ("rs_ratio", "rs_momentum"):
                 # two-stage lowering: list-tier smoothing (nested projection —
                 # the operand fragment must render once, under its own alias)
                 # + window-tier z. Consumes pos[0] directly; the builder slot
                 # in the registry is a placeholder that is never called.
-                self._emit_rs(pos[0] if pos else None, name, n, alias)
+                self._emit_rs(pos[0] if pos else None, name, ints[0], alias)
                 self.n += 1
                 return alias
             expr = builder(pos[0] if pos else None, n, self.p, self.o, self.params)

@@ -78,9 +78,13 @@ Returns an eager `pl.DataFrame`. `apply_sql` calls
 before executing (no-op after the first call). `validate()` runs
 first, so validation errors match the polars backend's error strings.
 
-If the scan uses a talib-only name (`macd`, `bbands_upper`,
-`bbands_lower`, `adx`, `aroon`, `cdlengulfing`, `ht_trendline`), pass
-`engine="duckdb"` to `validate`:
+If the scan uses a duckdb-only name (`ht_trendline`, `stoch_k`,
+`stoch_d`), pass
+`engine="duckdb"` to `validate` (the parity names `macd`,
+`bbands_upper`, `bbands_lower`, `adx`, `aroon`, `kama`,
+`cdlengulfing`, and the `_CDL_PARITY` candlestick set validate on the
+default polars engine too — their exact builders need the `talib`
+extra and an eager frame):
 
 ```python
 from scanlang import validate
@@ -122,7 +126,7 @@ for the warm-up contract.
 | --- | --- | --- |
 | Data is already a polars `DataFrame` / `LazyFrame` | polars | No translation cost; `apply` folds into the lazy plan |
 | Data is already in a duckdb lake or warehouse | duckdb | Push the scan into the existing connection; only hits cross the wire |
-| You need `macd`, `bbands`, `adx`, `aroon`, `cdlengulfing`, or `ht_trendline` | duckdb | These have no polars-builder equivalent |
+| You need `ht_trendline`, or `stoch_k`/`stoch_d` | duckdb | These have no polars-builder equivalent (`macd`/`bbands`/`adx`/`aroon`/`kama`/`cdlengulfing` and the `_CDL_PARITY` candlestick set run on both) |
 | Full-universe scan against a parquet lake (~25M rows) | duckdb | `t_*` scalar form beats polars native on the benchmark (3.8 s vs 6.0 s) |
 | Notebooks, REPL, small frame in memory | polars | Eager start, no extension to install |
 
@@ -135,6 +139,7 @@ and the indicator registry contract.
 - [duckdb backend reference](../reference/duckdb-backend.md) — the
   full module surface and lowering rules
 - [Indicators reference](../reference/indicators.md) — engine
-  availability per name (the talib-only ones are duckdb-only)
+  availability per name (only `ht_trendline`, `stoch_k`, and `stoch_d`
+  are duckdb-only)
 - [Why no duckdb](../explanation/why-no-duckdb.md) — the verdict the
   backend now supersedes

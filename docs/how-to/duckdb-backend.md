@@ -139,6 +139,7 @@ and the indicator registry contract.
 - [duckdb backend reference](../reference/duckdb-backend.md) — the
   full module surface and lowering rules
 - [Indicators reference](../reference/indicators.md) — engine
-  availability per name (the talib-only ones are duckdb-only)
+  availability per name (only `ht_trendline`, `stoch_k`, and `stoch_d`
+  are duckdb-only)
 - [Why no duckdb](../explanation/why-no-duckdb.md) — the verdict the
   backend now supersedes

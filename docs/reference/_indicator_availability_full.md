@@ -4,9 +4,14 @@
 
 | Indicator             | arg_spec      | required_cols            | polars | duckdb | tier (sql)                 | warm-up (bars) |
 | --- | --- | --- | --- | --- | --- | --- |
+| `accbands_lower`      | int           | high, low, close         | yes | —   | —                          | —  |
+| `accbands_upper`      | int           | high, low, close         | yes | —   | —                          | —  |
 | `ad`                  | ()            | high, low, close, volume | yes | yes | t_*                        | 0  |
+| `adosc`               | int           | high, low, close, volume | yes | —   | —                          | —  |
 | `adr`                 | expr, int     | high, low, close         | yes | yes | two-step window            | —  |
 | `adx`                 | int           | high, low, close         | yes | yes | t_*                        | 27 |
+| `adxr`                | int           | high, low, close         | yes | yes | t_*                        | —  |
+| `apo`                 | int           | close                    | yes | —   | —                          | —  |
 | `aroon`               | int           | high, low                | yes | yes | list CTE (struct-narrowed) | —  |
 | `atr`                 | int           | high, low, close         | yes | yes | t_*                        | —  |
 | `bbands_lower`        | int           | close                    | yes | yes | list CTE (struct-narrowed) | —  |
@@ -38,27 +43,39 @@
 | `cdlunique3river`     | int           | open, high, low, close   | yes | yes | t_*                        | —  |
 | `cdlupsidegap2crows`  | int           | open, high, low, close   | yes | yes | t_*                        | —  |
 | `cdlxsidegap3methods` | int           | open, high, low, close   | yes | yes | t_*                        | —  |
+| `cmo`                 | int           | close                    | yes | yes | t_*                        | —  |
 | `dema`                | expr, int     | —                        | yes | yes | t_*                        | —  |
 | `ema`                 | expr, int     | —                        | yes | yes | t_*                        | —  |
+| `ht_dcperiod`         | int           | close                    | yes | yes | t_*                        | —  |
+| `ht_dcphase`          | int           | close                    | yes | yes | t_*                        | —  |
 | `ht_trendline`        | int           | close                    | —   | yes | t_*                        | 63 |
 | `kama`                | int           | close                    | yes | yes | t_*                        | —  |
 | `macd`                | int           | close                    | yes | yes | list CTE (struct-narrowed) | 33 |
+| `mfi`                 | int           | high, low, close, volume | yes | —   | —                          | —  |
+| `midpoint`            | int           | close                    | yes | yes | t_*                        | —  |
 | `midprice`            | int           | high, low                | yes | yes | t_*                        | —  |
 | `mom`                 | expr, int     | —                        | yes | yes | t_*                        | —  |
 | `natr`                | expr, int     | high, low, close         | yes | yes | t_*                        | —  |
+| `obv`                 | int           | close, volume            | yes | —   | —                          | —  |
+| `ppo`                 | int           | close                    | yes | —   | —                          | —  |
 | `rmax`                | expr, int     | —                        | yes | yes | native window              | —  |
 | `rmin`                | expr, int     | —                        | yes | yes | native window              | —  |
 | `roc`                 | expr, int     | —                        | yes | yes | t_*                        | —  |
 | `rs_momentum`         | expr, int     | —                        | yes | yes | list CTE (two-stage)       | —  |
 | `rs_ratio`            | expr, int     | —                        | yes | yes | list CTE (two-stage)       | —  |
 | `rsi`                 | expr, int     | —                        | yes | yes | t_*                        | —  |
+| `sar`                 | int           | high, low                | yes | —   | —                          | —  |
 | `shift`               | expr, int     | —                        | yes | yes | native window              | —  |
 | `slope`               | expr, int     | —                        | yes | yes | t_*                        | —  |
 | `sma`                 | expr, int     | —                        | yes | yes | native window              | —  |
 | `stoch_d`             | int, int, int | high, low, close         | —   | yes | list CTE (struct-narrowed) | —  |
 | `stoch_k`             | int, int, int | high, low, close         | —   | yes | list CTE (struct-narrowed) | —  |
+| `stochrsi`            | int           | close                    | yes | —   | —                          | —  |
+| `t3`                  | int           | close                    | yes | —   | —                          | —  |
 | `tema`                | expr, int     | —                        | yes | yes | t_*                        | —  |
 | `trange`              | int           | high, low, close         | yes | yes | t_*                        | 1  |
 | `trima`               | expr, int     | —                        | yes | yes | t_*                        | —  |
+| `trix`                | int           | close                    | yes | yes | t_*                        | —  |
+| `ultosc`              | int           | high, low, close         | yes | —   | —                          | —  |
 | `willr`               | int           | high, low, close         | yes | yes | t_*                        | —  |
 | `wma`                 | expr, int     | —                        | yes | yes | t_*                        | —  |

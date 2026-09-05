@@ -7,6 +7,7 @@
 | `ad`                  | ()        | high, low, close, volume | yes | yes | t_*                        | 0  |
 | `adr`                 | expr, int | high, low, close         | yes | yes | two-step window            | —  |
 | `adx`                 | int       | high, low, close         | yes | yes | t_*                        | 27 |
+| `adxr`                | int       | high, low, close         | yes | yes | t_*                        | —  |
 | `aroon`               | int       | high, low                | yes | yes | list CTE (struct-narrowed) | —  |
 | `atr`                 | int       | high, low, close         | yes | yes | t_*                        | —  |
 | `bbands_lower`        | int       | close                    | yes | yes | list CTE (struct-narrowed) | —  |
@@ -38,10 +39,14 @@
 | `cdlunique3river`     | int       | open, high, low, close   | yes | yes | t_*                        | —  |
 | `cdlupsidegap2crows`  | int       | open, high, low, close   | yes | yes | t_*                        | —  |
 | `cdlxsidegap3methods` | int       | open, high, low, close   | yes | yes | t_*                        | —  |
+| `cmo`                 | int       | close                    | yes | yes | t_*                        | —  |
 | `dema`                | expr, int | —                        | yes | yes | t_*                        | —  |
 | `ema`                 | expr, int | —                        | yes | yes | t_*                        | —  |
+| `ht_dcperiod`         | int       | close                    | yes | yes | t_*                        | —  |
+| `ht_dcphase`          | int       | close                    | yes | yes | t_*                        | —  |
 | `kama`                | int       | close                    | yes | yes | t_*                        | —  |
 | `macd`                | int       | close                    | yes | yes | list CTE (struct-narrowed) | 33 |
+| `midpoint`            | int       | close                    | yes | yes | t_*                        | —  |
 | `midprice`            | int       | high, low                | yes | yes | t_*                        | —  |
 | `mom`                 | expr, int | —                        | yes | yes | t_*                        | —  |
 | `natr`                | expr, int | high, low, close         | yes | yes | t_*                        | —  |
@@ -57,5 +62,6 @@
 | `tema`                | expr, int | —                        | yes | yes | t_*                        | —  |
 | `trange`              | int       | high, low, close         | yes | yes | t_*                        | 1  |
 | `trima`               | expr, int | —                        | yes | yes | t_*                        | —  |
+| `trix`                | int       | close                    | yes | yes | t_*                        | —  |
 | `willr`               | int       | high, low, close         | yes | yes | t_*                        | —  |
 | `wma`                 | expr, int | —                        | yes | yes | t_*                        | —  |

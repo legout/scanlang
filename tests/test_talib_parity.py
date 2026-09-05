@@ -2,7 +2,8 @@
 
 Families (per the plan's matrix): expression + period (wma/dema/tema/trima/
 mom + kama seam), OHLC(+volume) columns + period (midprice/cci/willr/trange),
-periodless (ad), multiple-period (stoch_k/stoch_d), and multi-output
+periodless (ad; wave 2 adds ultosc/obv/sar/ht_dcperiod/ht_dcphase),
+multiple-period (stoch_k/stoch_d), and multi-output
 narrowings (macd line, bbands_upper/lower, aroon up — one talib output field
 per scanlang name, seam-built on the polars side). Registry parity is
 generated from the registries themselves; execution tests cover partition
@@ -76,6 +77,30 @@ CASES = {
     "willr": ([14], lambda g: talib.WILLR(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy(), timeperiod=14), 13),
     "trange": ([14], lambda g: talib.TRANGE(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy()), 1),
     "ad": ([], lambda g: talib.AD(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy(), g["volume"].to_numpy()), 0),
+    "adxr": ([14], lambda g: talib.ADXR(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy(), timeperiod=14), 40),
+    "cmo": ([14], lambda g: talib.CMO(g["close"].to_numpy(), timeperiod=14), 14),
+    "trix": ([14], lambda g: talib.TRIX(g["close"].to_numpy(), timeperiod=14), 40),
+    # periodless (Task 0): ULTOSC binds timeperiod1/2/3, OBV takes no period —
+    # hand-written seam builders; stochrsi/apo/ppo/mfi/adosc/t3/sar/accbands
+    # have no t_* in the community extension (live-probed duckdb_functions())
+    # — polars tier only.
+    "stochrsi": ([14], lambda g: talib.STOCHRSI(g["close"].to_numpy(), timeperiod=14, fastk_period=14, fastd_period=3, fastd_matype=0)[0], 29),
+    "apo": ([12], lambda g: talib.APO(g["close"].to_numpy(), fastperiod=12, slowperiod=26, matype=0), 25),
+    "ppo": ([12], lambda g: talib.PPO(g["close"].to_numpy(), fastperiod=12, slowperiod=26, matype=0), 25),
+    "mfi": ([14], lambda g: talib.MFI(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy(), g["volume"].to_numpy(), timeperiod=14), 14),
+    "adosc": ([3], lambda g: talib.ADOSC(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy(), g["volume"].to_numpy(), fastperiod=3, slowperiod=10), 9),
+    "ultosc": ([14], lambda g: talib.ULTOSC(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy()), 28),
+    "obv": ([14], lambda g: talib.OBV(g["close"].to_numpy(), g["volume"].to_numpy()), 0),
+    # overlap wave-2: midpoint/ht_dcperiod/ht_dcphase are dual-engine (t_* in
+    # the extension); t3/sar/accbands are polars+talib-extra-only.
+    "midpoint": ([14], lambda g: talib.MIDPOINT(g["close"].to_numpy(), timeperiod=14), 13),
+    "t3": ([14], lambda g: talib.T3(g["close"].to_numpy(), timeperiod=14, vfactor=0.7), 78),
+    "sar": ([14], lambda g: talib.SAR(g["high"].to_numpy(), g["low"].to_numpy()), 1),
+    "accbands_upper": ([14], lambda g: talib.ACCBANDS(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy(), timeperiod=14)[0], 13),
+    "accbands_lower": ([14], lambda g: talib.ACCBANDS(g["high"].to_numpy(), g["low"].to_numpy(), g["close"].to_numpy(), timeperiod=14)[2], 13),
+    # cycle wave-2 (dual-engine): fixed Hilbert-transform warm-ups, no bindable n
+    "ht_dcperiod": ([14], lambda g: talib.HT_DCPERIOD(g["close"].to_numpy()), 32),
+    "ht_dcphase": ([14], lambda g: talib.HT_DCPHASE(g["close"].to_numpy()), 63),
     # multi-output narrowings (polars side rides the adx/kama seam):
     # each scanlang name is ONE talib output field, selected here at the
     # same index the SQL struct narrowing picks.
@@ -112,14 +137,23 @@ def test_registry_parity_generated():
     target = {
         "wma", "dema", "tema", "trima", "kama", "mom", "midprice", "cci", "willr", "trange", "ad",
         "macd", "bbands_upper", "bbands_lower", "aroon", "stoch_k", "stoch_d",
+        # wave 2: momentum, overlap, cycle
+        "adxr", "cmo", "trix", "stochrsi", "apo", "ppo", "mfi", "adosc", "ultosc", "obv",
+        "midpoint", "t3", "sar", "accbands_upper", "accbands_lower",
+        "ht_dcperiod", "ht_dcphase",
     }
-    assert target <= set(SQL_INDICATORS)
+    # no t_* in the community extension (live-probed): polars tier only
+    sql_extra = {"ultosc", "obv", "mfi", "adosc", "stochrsi", "apo", "ppo", "t3", "sar", "accbands_upper", "accbands_lower"}
+    assert target <= set(SQL_INDICATORS) | sql_extra
     dual = target - {"stoch_k", "stoch_d"}
     assert dual <= set(INDICATORS)
-    for name in dual:
+    sql_only = sql_extra  # no t_* in the extension
+    for name in dual - sql_only:
         assert INDICATORS[name][0] == SQL_INDICATORS[name][0], name
         assert INDICATORS[name][2] == SQL_INDICATORS[name][2], name
     for name in target:
+        if name in sql_only:
+            continue
         assert set(SQL_INDICATORS[name][0]) <= {"expr", "int"}, name
         assert all(isinstance(c, str) for c in SQL_INDICATORS[name][2]), name
     assert INDICATORS["ad"][0] == ()  # the first periodless entry
@@ -166,18 +200,29 @@ def test_parity_set_execution_and_mature_values(con):
     # documented warm-up window. Seam names pre-stage __<name>_0 (kama plus
     # the multi-output seam fns — their builders return callables, not Exprs).
     full_polars = {"dema", "tema"}
-    seam_names = {"kama", "macd", "bbands_upper", "bbands_lower", "aroon"}
+    seam_names = {"kama", "macd", "bbands_upper", "bbands_lower", "aroon",
+                  # wave-2 seam fns (table rows + the periodless builders)
+                  "adxr", "cmo", "trix", "stochrsi", "apo", "ppo", "mfi", "adosc",
+                  "ultosc", "obv", "midpoint", "t3", "sar",
+                  "accbands_upper", "accbands_lower", "ht_dcperiod", "ht_dcphase"}
+    sql_only = {"ultosc", "obv", "mfi", "adosc", "stochrsi", "apo", "ppo",
+                "t3", "sar", "accbands_upper", "accbands_lower"}  # no t_* in the extension
     for name, (args, ref_fn, warmup) in CASES.items():
         d = {"filters": [{"property": {"fn": name, "args": args}, "op": ">=", "value": -1e9}]}
         pol = apply(df, d, catalog=cat)
-        sql = apply_sql(con, d, relation="bars", catalog=cat)
+        if name not in sql_only:
+            sql = apply_sql(con, d, relation="bars", catalog=cat)
+        else:
+            sql = None  # no t_* in the extension — polars tier only
         # null masks + partition isolation (warm-up never leaks into hits)
         expected = 3 * N if name in full_polars else 3 * (N - warmup)
         assert pol.height == expected, name
-        assert sql.height == 3 * (N - warmup), name
+        if name not in sql_only:
+            assert sql.height == 3 * (N - warmup), name
         assert pol.group_by("symbol", maintain_order=True).len()["len"].to_list() == [expected // 3] * 3, name
-        assert sql.group_by("symbol", maintain_order=True).len()["len"].to_list() == [N - warmup] * 3, name
-        assert sql["c0"].null_count() == 0, name
+        if name not in sql_only:
+            assert sql.group_by("symbol", maintain_order=True).len()["len"].to_list() == [N - warmup] * 3, name
+            assert sql["c0"].null_count() == 0, name
         alias = f"__{name}_0" if name in seam_names else None
         if alias is not None:
             assert alias in pol.columns and pol[alias].null_count() == 0, name
@@ -189,7 +234,10 @@ def test_parity_set_execution_and_mature_values(con):
             sub = df.filter(pl.col("symbol") == sym).sort("session")
             ref = ref_fn(sub)
             sessions = sub["session"].to_list()
-            s_vals = dict(zip(sessions[warmup:], sql.filter(pl.col("symbol") == sym)["c0"].to_list(), strict=True))
+            s_vals = (
+                dict(zip(sessions[warmup:], sql.filter(pl.col("symbol") == sym)["c0"].to_list(), strict=True))
+                if name not in sql_only else None
+            )
             if name in seam_names:
                 p_vals = dict(zip(sessions[warmup:], pol.filter(pl.col("symbol") == sym)[alias].to_list(), strict=True))
             else:
@@ -205,7 +253,8 @@ def test_parity_set_execution_and_mature_values(con):
                     continue  # talib's own unstable-period tail (none in this table)
                 if warmup + i >= from_bar:
                     assert abs(p_vals[sess] - r) <= tol, (name, "polars", sym, sess, p_vals[sess], r)
-                assert abs(s_vals[sess] - r) <= 1e-9, (name, "sql", sym, sess, s_vals[sess], r)
+                if s_vals is not None:
+                    assert abs(s_vals[sess] - r) <= 1e-9, (name, "sql", sym, sess, s_vals[sess], r)
 
 
 def test_cci_cross_engine_hit_set_equality(con):

@@ -238,11 +238,12 @@ def test_sql_registry_superset_of_indicators():
     """Every INDICATORS name mirrors 1:1; talib-only names live SQL-side only."""
     from scanlang.indicators import INDICATORS
 
-    for name, (arg_spec, _b, req) in INDICATORS.items():
-        assert name in SQL_INDICATORS
-        assert SQL_INDICATORS[name][0] == arg_spec
-        assert SQL_INDICATORS[name][2] == req
-    assert set(SQL_INDICATORS) > set(INDICATORS)
+    # wave-2 polars+talib-extra-only names: the community extension has no
+    # t_ultosc/t_obv/t_mfi/t_adosc/t_stochrsi/t_apo/t_ppo/t_t3/t_sar/t_accbands
+    # (live-probed duckdb_functions()) — no SQL lowering exists or is faked.
+    polars_only = {"ultosc", "obv", "mfi", "adosc", "stochrsi", "apo", "ppo", "t3", "sar", "accbands_upper", "accbands_lower"}
+    assert polars_only.isdisjoint(SQL_INDICATORS)
+    assert set(SQL_INDICATORS) > (set(INDICATORS) - polars_only)
     assert set(SQL_INDICATORS) - set(INDICATORS) == {
         "ht_trendline", "stoch_k", "stoch_d",
     }

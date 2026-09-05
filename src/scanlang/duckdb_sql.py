@@ -250,6 +250,15 @@ def _cdl(name: str):
     return build
 
 
+# --- parity wave 2 lowering -------------------------------------------------
+# Live-probed duckdb_functions(): the community extension exposes t_adxr,
+# t_cmo, t_trix, t_midpoint, t_ht_dcperiod, t_ht_dcphase — but NOT
+# t_stochrsi/t_apo/t_ppo/t_mfi/t_adosc/t_ultosc/t_obv/t_t3/t_sar/t_accbands.
+# Those wave-2 names are polars+talib-extra-only (tier "-" in the availability
+# table); no SQL lowering is faked. The adxr/cmo/trix/midpoint/ht_* lowerings
+# live as _tcol one-liners in SQL_INDICATORS below.
+
+
 def _ht_trendline(x, n, p: str, o: str, params: list) -> str:
     return _tcol("t_ht_trendline", None, p, o, params, ("close",))
 
@@ -369,7 +378,17 @@ SQL_INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     "bbands_lower": (("int",), _bband("lower"), ("close",)),
     "adx": (("int",), _adx, ("high", "low", "close")),
     "aroon": (("int",), _aroon, ("high", "low")),
+    # --- parity wave 2: momentum + cycle with a t_* in the extension
+    # (live-probed; stochrsi/apo/ppo/mfi/adosc/ultosc/obv have NO t_* —
+    # they stay polars+talib-extra-only, see the wave-2 note above) ---
+    "adxr": (("int",), lambda x, n, p, o, pa: _tcol("t_adxr", n, p, o, pa, ("high", "low", "close")), ("high", "low", "close")),
+    "cmo": (("int",), lambda x, n, p, o, pa: _tcol("t_cmo", n, p, o, pa, ("close",)), ("close",)),
+    "trix": (("int",), lambda x, n, p, o, pa: _tcol("t_trix", n, p, o, pa, ("close",)), ("close",)),
+    "midpoint": (("int",), lambda x, n, p, o, pa: _tcol("t_midpoint", n, p, o, pa, ("close",)), ("close",)),
     "ht_trendline": (("int",), _ht_trendline, ("close",)),
+    # periodless cycle (ht_trendline dummy-int precedent)
+    "ht_dcperiod": (("int",), lambda x, n, p, o, pa: _tcol("t_ht_dcperiod", None, p, o, pa, ("close",)), ("close",)),
+    "ht_dcphase": (("int",), lambda x, n, p, o, pa: _tcol("t_ht_dcphase", None, p, o, pa, ("close",)), ("close",)),
     "stoch_k": (("int", "int", "int"), _stoch("slowk"), ("high", "low", "close")),
     "stoch_d": (("int", "int", "int"), _stoch("slowd"), ("high", "low", "close")),
     # candlestick-pattern parity: same dummy-int contract as cdlengulfing,

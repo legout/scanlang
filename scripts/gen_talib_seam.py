@@ -39,6 +39,20 @@ SPEC: dict[str, tuple] = {
     "bbands_upper": ("BBANDS", ("close",), "timeperiod", {"nbdevup": 2.0, "nbdevdn": 2.0, "matype": 0}, 0),
     "bbands_lower": ("BBANDS", ("close",), "timeperiod", {"nbdevup": 2.0, "nbdevdn": 2.0, "matype": 0}, 2),
     "aroon": ("AROON", ("high", "low"), "timeperiod", {}, 1),
+    # --- parity wave 2: momentum ---
+    "adxr": ("ADXR", ("high", "low", "close"), "timeperiod", {}, None),
+    "cmo": ("CMO", ("close",), "timeperiod", {}, None),
+    "trix": ("TRIX", ("close",), "timeperiod", {}, None),
+    "stochrsi": ("STOCHRSI", ("close",), "timeperiod", {"fastk_period": 14, "fastd_period": 3, "fastd_matype": 0}, 0),
+    "apo": ("APO", ("close",), "fastperiod", {"slowperiod": 26, "matype": 0}, None),
+    "ppo": ("PPO", ("close",), "fastperiod", {"slowperiod": 26, "matype": 0}, None),
+    "mfi": ("MFI", ("high", "low", "close", "volume"), "timeperiod", {}, None),
+    "adosc": ("ADOSC", ("high", "low", "close", "volume"), "fastperiod", {"slowperiod": 10}, None),
+    # --- parity wave 2: overlap ---
+    "midpoint": ("MIDPOINT", ("close",), "timeperiod", {}, None),
+    "t3": ("T3", ("close",), "timeperiod", {"vfactor": 0.7}, None),
+    "accbands_upper": ("ACCBANDS", ("high", "low", "close"), "timeperiod", {}, 0),
+    "accbands_lower": ("ACCBANDS", ("high", "low", "close"), "timeperiod", {}, 2),
 }
 
 

@@ -269,6 +269,77 @@ def _seam_builder(
     return build
 
 
+def _ultosc(n=None, partition: str = "symbol"):
+    """talib ULTOSC per partition via the seam (periodless per Task 0).
+
+    ULTOSC takes ``timeperiod1/2/3`` (semantic 7/14/28 defaults), no single
+    bindable ``timeperiod`` — the dummy-int precedent (trange/ad): the
+    user-facing n is accepted and ignored.
+    """
+    import talib
+
+    def _apply(df: pl.DataFrame) -> pl.DataFrame:
+        arr = talib.ULTOSC(
+            df["high"].to_numpy(), df["low"].to_numpy(), df["close"].to_numpy()
+        )
+        return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
+
+    return _apply
+
+
+def _obv(n=None, partition: str = "symbol"):
+    """talib OBV per partition via the seam (periodless: OBV(real, volume)).
+
+    OBV starts at 0, not null — talib semantic (cumulative), no warm-up.
+    """
+    import talib
+
+    def _apply(df: pl.DataFrame) -> pl.DataFrame:
+        arr = talib.OBV(df["close"].to_numpy(), df["volume"].to_numpy())
+        return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
+
+    return _apply
+
+
+def _sar(n=None, partition: str = "symbol"):
+    """talib SAR per partition via the seam (periodless per Task 0).
+
+    SAR's parameters are the acceleration/maximum steps (0.02/0.2 talib
+    defaults), not a bar period — no bindable ``timeperiod`` (dummy-int
+    precedent). SAR is stateful across the whole partition; unlike the
+    other seams it has NO null warm-up (first bar is null via fill_nan,
+    everything after is defined).
+    """
+    import talib
+
+    def _apply(df: pl.DataFrame) -> pl.DataFrame:
+        arr = talib.SAR(df["high"].to_numpy(), df["low"].to_numpy())
+        return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
+
+    return _apply
+
+
+def _ht_cycle(fn: str):
+    """talib HT_* cycle fn per partition via the seam (periodless per Task 0).
+
+    The Hilbert-transform cycle functions read close only and take no
+    period (the dummy-int precedent, ht_trendline); their warm-up is the
+    transform's fixed internal window (32/63 bars — pinned in the parity
+    tests), not a bindable n. One factory, like _cdl: a future ht_* wave
+    (phasor/sine) is a one-line registration.
+    """
+    import talib
+
+    def build(_n=None, partition: str = "symbol"):
+        def _apply(df: pl.DataFrame) -> pl.DataFrame:
+            arr = getattr(talib, fn)(df["close"].to_numpy())
+            return df.with_columns(pl.Series("__adx", arr).fill_nan(None))
+
+        return _apply
+
+    return build
+
+
 # candlestick patterns: every registered CDL* has the identical (o,h,l,c)
 # -> int32 0/±100 signature, so one closure registers them all; the pattern
 # name is bound at builder-call time (default arg — the registry loop would
@@ -405,6 +476,16 @@ INDICATORS: dict[str, tuple[tuple[str, ...], Callable, tuple[str, ...]]] = {
     # dummy-int precedent (ht_trendline): TRANGE takes no period; n is ignored
     "trange": (("int",), _trange, ("high", "low", "close")),
     "ad": ((), _ad, ("high", "low", "close", "volume")),
+    # dummy-int precedent (trange/ad): ultosc binds timeperiod1/2/3, obv
+    # takes no period — both hand-written seam builders, not table rows
+    "ultosc": (("int",), _ultosc, ("high", "low", "close")),
+    "obv": (("int",), _obv, ("close", "volume")),
+    # sar: acceleration/maximum steps, no period (Task 0) — hand-written seam
+    "sar": (("int",), _sar, ("high", "low")),
+    # cycle: Hilbert-transform fns are periodless (ht_trendline dummy-int
+    # precedent) — one factory, phasor/sine are one-liners if a wave adds them
+    "ht_dcperiod": (("int",), _ht_cycle("HT_DCPERIOD"), ("close",)),
+    "ht_dcphase": (("int",), _ht_cycle("HT_DCPHASE"), ("close",)),
 }
 
 # name -> (talib_fn, inputs, n_kw, fixed kwargs, output slot)
@@ -432,6 +513,18 @@ _TALIB_SEAM = {
     "bbands_upper": ("BBANDS", ("close",), "timeperiod", {"nbdevup": 2.0, "nbdevdn": 2.0, "matype": 0}, 0),
     "bbands_lower": ("BBANDS", ("close",), "timeperiod", {"nbdevup": 2.0, "nbdevdn": 2.0, "matype": 0}, 2),
     "aroon": ("AROON", ("high", "low"), "timeperiod", {}, 1),
+    "adxr": ("ADXR", ("high", "low", "close"), "timeperiod", {}, None),
+    "cmo": ("CMO", ("close",), "timeperiod", {}, None),
+    "trix": ("TRIX", ("close",), "timeperiod", {}, None),
+    "stochrsi": ("STOCHRSI", ("close",), "timeperiod", {"fastk_period": 14, "fastd_period": 3, "fastd_matype": 0}, 0),
+    "apo": ("APO", ("close",), "fastperiod", {"slowperiod": 26, "matype": 0}, None),
+    "ppo": ("PPO", ("close",), "fastperiod", {"slowperiod": 26, "matype": 0}, None),
+    "mfi": ("MFI", ("high", "low", "close", "volume"), "timeperiod", {}, None),
+    "adosc": ("ADOSC", ("high", "low", "close", "volume"), "fastperiod", {"slowperiod": 10}, None),
+    "midpoint": ("MIDPOINT", ("close",), "timeperiod", {}, None),
+    "t3": ("T3", ("close",), "timeperiod", {"vfactor": 0.7}, None),
+    "accbands_upper": ("ACCBANDS", ("high", "low", "close"), "timeperiod", {}, 0),
+    "accbands_lower": ("ACCBANDS", ("high", "low", "close"), "timeperiod", {}, 2),
 }
 # --- END GENERATED ---
 

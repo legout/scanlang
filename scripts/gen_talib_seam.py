@@ -11,17 +11,17 @@ edit plus this rerun — no closure surgery.
 
 Contract (same shape as ``scripts/gen_indicator_availability.py``):
 committed source, regenerated only when SPEC changes, and idempotent — a
-second run writes nothing. Before writing, the script VALIDATES the target:
-it executes the target file standalone (``spec_from_file_location``) and
-asserts every SPEC name is registered in ``INDICATORS`` with SPEC's exact
-``required_cols`` (the guard polars_ta lacks — a talib wrapper is never
-trusted sight unseen). A mismatch refuses the write and exits 1.
+second run writes nothing. Before writing, the script VALIDATES the
+regenerated module: it executes the rendered output standalone
+(``spec_from_file_location``) and asserts every SPEC name is registered
+in ``INDICATORS`` with SPEC's exact ``required_cols`` (the guard
+polars_ta lacks — a talib wrapper is never trusted sight unseen). A
+mismatch refuses the write and exits 1, leaving the target untouched.
 """
 
 from __future__ import annotations
 
 import argparse
-import ast
 import sys
 from pathlib import Path
 
@@ -56,19 +56,8 @@ def _render_table() -> str:
     return "\n".join(lines)
 
 
-def _spec_from_source(text: str) -> dict:
-    """The current _TALIB_SEAM table, parsed (not imported) from the source."""
-    tree = ast.parse(text)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-            getattr(t, "id", None) == "_TALIB_SEAM" for t in node.targets
-        ):
-            return ast.literal_eval(node.value)
-    raise SystemExit("no _TALIB_SEAM assignment found in the target module")
-
-
-def _validate(target: Path) -> None:
-    """Execute the target module standalone; every SPEC name must register.
+def _validate(path: Path) -> None:
+    """Execute the module at ``path`` standalone; every SPEC name must register.
 
     Loaded by file path (``spec_from_file_location``), NOT via the
     ``scanlang`` package: package resolution would find the repo's
@@ -80,12 +69,15 @@ def _validate(target: Path) -> None:
     raises) refuses the write.
     """
     import importlib.util
+    from importlib.machinery import SourceFileLoader
 
-    mod_spec = importlib.util.spec_from_file_location("scanlang.indicators", target)
-    if mod_spec is None or mod_spec.loader is None:  # pragma: no cover - target is a .py we just read
-        raise SystemExit(f"cannot load module from {target}")
+    # Explicit loader: the staged file's name doesn't end in .py, so
+    # spec_from_file_location cannot infer one.
+    loader = SourceFileLoader("scanlang.indicators", str(path))
+    mod_spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert mod_spec is not None  # a real loader always yields a spec
     mod = importlib.util.module_from_spec(mod_spec)
-    mod_spec.loader.exec_module(mod)
+    loader.exec_module(mod)
     got = {n: list(mod.INDICATORS[n][2]) for n in SPEC if n in mod.INDICATORS}
     missing = [n for n in SPEC if n not in got]
     wrong = {
@@ -107,13 +99,6 @@ def main() -> int:
     if not target.exists():
         raise SystemExit(f"target module not found: {target}")
     text = target.read_text()
-    current = _spec_from_source(text)
-    if current != SPEC:
-        raise SystemExit(
-            "target table drifted from SPEC — rerun this script to regenerate, "
-            "or edit SPEC."
-        )
-    _validate(target)
     new_block = _render_table()
     start = text.index(BEGIN)
     stop = text.index(END) + len(END)
@@ -121,7 +106,15 @@ def main() -> int:
     if updated == text:
         print(f"{target}: already up to date (no write)")
         return 0
-    target.write_text(updated)
+    # Validate the REGENERATED module (not the pre-write target): stage it in
+    # a sibling temp file, rename over the target only on a pass.
+    staged = target.with_name(target.name + ".gen_talib_seam.tmp")
+    staged.write_text(updated)
+    try:
+        _validate(staged)
+        staged.replace(target)
+    finally:
+        staged.unlink(missing_ok=True)
     print(f"{target}: regenerated {len(SPEC)} seam row(s)")
     return 0
 

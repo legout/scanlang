@@ -59,19 +59,34 @@ def test_spec_matches_committed_table():
     assert gen_talib_seam.SPEC == dict(_TALIB_SEAM)
 
 
-def test_validation_gate_refuses_broken_registration(tmp_path):
-    """Never trust the wrapper: a table whose registration loop is broken
-    must fail the import gate and NOT be written."""
+def test_regeneration_updates_table_and_gate_guards_output(tmp_path):
+    """The SPEC-differs path: a stale table is regenerated to SPEC — and the
+    gate validates the REGENERATED output, refusing the write if it would not
+    register (leaving the stale target untouched)."""
     committed = _INDICATORS.read_text()
     target = tmp_path / "scanlang" / "indicators.py"
     target.parent.mkdir()
-    target.write_text(committed)
 
+    # Stale copy: drop the aroon row (present in SPEC) by hand.
+    aroon_line = '    "aroon": ("AROON", ("high", "low"), "timeperiod", {}, 1),\n'
+    assert aroon_line in committed, "table rows moved — update this test"
+    stale = committed.replace(aroon_line, "")
+    target.write_text(stale)
+
+    # Rerun regenerates: the rendered table replaces the stale block.
+    result = _run(target)
+    assert result.returncode == 0, result.stderr
+    assert target.read_text() == committed, "regeneration did not render SPEC"
+    assert "already up to date" not in result.stdout
+
+    # Same path with a broken registration loop: the gate validates the
+    # regenerated output and refuses — target keeps the stale table.
     loop_line = '    INDICATORS.setdefault(_name, (("int",), _seam_builder(_fn, _cols, _nkw, _kw, _slot), _cols))'
-    assert loop_line in committed, "registration loop moved — update this test"
-    broken = committed.replace(loop_line, "    pass")
-    target.write_text(broken)
+    broken_stale = stale.replace(loop_line, "    pass")
+    assert loop_line in stale and broken_stale != stale
+    target.write_text(broken_stale)
 
     result = _run(target)
-    assert result.returncode != 0, "gate must refuse a table that does not register"
-    assert target.read_text() == broken, "gate wrote despite validation failure"
+    assert result.returncode != 0, "gate must refuse a broken regenerated block"
+    assert target.read_text() == broken_stale, "gate wrote despite validation failure"
+    assert not list(target.parent.glob("*.tmp")), "staging temp file left behind"

@@ -192,6 +192,10 @@ def _operand_errors(spec, where: str, catalog: dict, errors: list[str], engine: 
         if isinstance(name, str):
             if name in INDICATORS:
                 entry = INDICATORS[name]
+                if engine == "duckdb" and name not in sql:
+                    errors.append(
+                        f"{where}: indicator {name!r} is not available on the duckdb engine"
+                    )
             elif name in sql:
                 entry = sql[name]
                 if engine != "duckdb":
@@ -351,7 +355,10 @@ def validate(scan_def: dict, *, catalog: dict = PROPERTY_CATALOG, engine: str = 
     ``INDICATORS`` parity builders (the ``talib`` extra, applied via
     group_by/map_groups over the partition) as well as ``SQL_INDICATORS``
     lowerings, so they validate under both engines
-    without the duckdb-only error.
+    without the duckdb-only error. Symmetrically, wave-2 names with a
+    polars builder but no t_* lowering (``adosc``, ``sar``, ...) error
+    under ``engine="duckdb"`` with ``is not available on the duckdb
+    engine`` instead of reaching a KeyError in compile_sql.
 
     Args:
         scan_def: A scan-def dict (``{"filters": [...], "order_by": ...,

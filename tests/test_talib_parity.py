@@ -160,13 +160,18 @@ def test_registry_parity_generated():
 
 
 def test_new_entries_validate_on_both_engines():
-    """Engine-aware validate: dual names OK everywhere, stoch SQL-only."""
+    """Engine-aware validate: dual names OK everywhere; polars-only names refused on duckdb."""
     df = _bars()
     cat = catalog_from_schema(df)
+    sql = SQL_INDICATORS
     for name, (args, _fn, _w) in CASES.items():
         d = {"filters": [{"property": {"fn": name, "args": args}, "op": ">=", "value": -1e9}]}
         assert validate(d, catalog=cat, engine="polars") == [], name
-        assert validate(d, catalog=cat, engine="duckdb") == [], name
+        if name in sql:  # dual-engine: clean on duckdb too
+            assert validate(d, catalog=cat, engine="duckdb") == [], name
+        else:  # polars+talib-extra only: validate refuses instead of KeyError in compile_sql
+            errs = validate(d, catalog=cat, engine="duckdb")
+            assert len(errs) == 1 and "is not available on the duckdb engine" in errs[0], (name, errs)
     for name in ("stoch_k", "stoch_d"):
         d = {"filters": [{"property": {"fn": name, "args": [5, 3, 3]}, "op": ">=", "value": -1e9}]}
         assert validate(d, catalog=cat, engine="duckdb") == [], name
@@ -378,6 +383,12 @@ def test_stoch_k_d_struct_narrowing_and_warmup(con):
     # polars compile can't lower a SQL-only name — actionable error, not KeyError
     with pytest.raises(ValueError, match="SQL-only"):
         compile(dict(d), catalog=cat, engine="duckdb")
+    # mirror direction: polars-only name (adosc) on the duckdb engine —
+    # apply_sql raises a clean ValueError, never a raw KeyError (review round 1)
+    d_adosc = {"filters": [{"property": {"fn": "adosc", "args": [3]}, "op": ">", "value": 0}]}
+    assert "is not available on the duckdb engine" in validate(d_adosc, catalog=cat, engine="duckdb")[0]
+    with pytest.raises(ValueError, match="is not available on the duckdb engine"):
+        apply_sql(con, d_adosc, relation="bars", catalog=cat)
     for sym in ("AAA", "BBB", "CCC"):
         sub = df.filter(pl.col("symbol") == sym).sort("session")
         sk, sd = talib.STOCH(sub["high"].to_numpy(), sub["low"].to_numpy(), sub["close"].to_numpy(),
